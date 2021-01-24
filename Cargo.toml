@@ -1,9 +1,9 @@
 [package]
 name = "round-based"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2018"
 authors = ["Denis Varlakov <dsurv@yandex.ru>"]
-license = "MIT"
+license = "GPL-3.0"
 description = "Driver for round-based protocols"
 repository = "https://github.com/ZenGo-X/round-based-protocol"
 categories = ["asynchronous", "cryptography", "network-programming"]
