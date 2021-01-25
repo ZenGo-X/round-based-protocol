@@ -6,6 +6,9 @@
 Round-based is a Rust crate providing utilities for executing generic round-based protocol.
 Refer to [documentation](https://docs.rs/round-based) to learn more.
 
+### Supported Rust Versions
+The minimum supported version is 1.45
+
 ### License
 Round-based is released under the terms of the GPLv3 license. See [LICENSE](LICENSE) for more information.
 
