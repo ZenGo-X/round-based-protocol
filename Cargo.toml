@@ -11,6 +11,7 @@ keywords = ["round-based", "mpc", "protocol"]
 
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 tokio = { version = "1.0.1", features = ["rt", "sync", "time"], optional = true }
