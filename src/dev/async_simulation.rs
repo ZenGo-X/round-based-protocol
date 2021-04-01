@@ -16,9 +16,11 @@ use crate::{Msg, StateMachine};
 /// Takes parties (every party is instance of [StateMachine](crate::sm::StateMachine)) and
 /// executes protocol between them.
 ///
-/// Compared to [Simulation](super::Simulation), AsyncSimulation requires [tokio] runtime and
-/// introduces parallelism, so it's heavier and more suitable for writing tests as it backed
-/// by protocol executor that will likely be used in production.
+/// Compared to [Simulation], AsyncSimulation requires [tokio] runtime and introduces parallelism,
+/// so it's more suitable for writing tests (whereas [Simulation] is more suitable for writing
+/// benchmarks).
+///
+/// [Simulation]: super::Simulation
 ///
 /// ## Limitations
 /// * Doesn't log process of protocol execution (except for occurring non critical errors). Limited
@@ -47,7 +49,7 @@ pub struct AsyncSimulation<SM: StateMachine> {
     tx: broadcast::Sender<Msg<SM::MessageBody>>,
     parties: Vec<
         Option<
-            AsyncProtocol<SM, Incoming<SM::MessageBody>, Outcoming<SM::MessageBody>, StderrWatcher>,
+            AsyncProtocol<SM, Incoming<SM::MessageBody>, Outgoing<SM::MessageBody>, StderrWatcher>,
         >,
     >,
     exhausted: bool,
@@ -75,10 +77,10 @@ where
         let rx = self.tx.subscribe();
 
         let incoming = incoming(rx, party.party_ind());
-        let outcoming = Outcoming {
+        let outgoing = Outgoing {
             sender: self.tx.clone(),
         };
-        let party = AsyncProtocol::new(party, incoming, outcoming).set_watcher(StderrWatcher);
+        let party = AsyncProtocol::new(party, incoming, outgoing).set_watcher(StderrWatcher);
         self.parties.push(Some(party));
         self
     }
@@ -148,11 +150,11 @@ fn incoming<M: Clone + Send + Unpin + 'static>(
     Box::pin(stream)
 }
 
-struct Outcoming<M> {
+struct Outgoing<M> {
     sender: broadcast::Sender<Msg<M>>,
 }
 
-impl<M> Sink<Msg<M>> for Outcoming<M> {
+impl<M> Sink<Msg<M>> for Outgoing<M> {
     type Error = broadcast::error::SendError<Msg<M>>;
 
     fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {

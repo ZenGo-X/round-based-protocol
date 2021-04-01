@@ -24,7 +24,7 @@ pub use benchmark::{BenchmarkResults, Measurements};
 /// * No proper error handling. It should attach a context to returning error (like current round,
 ///   what we was doing when error occurred, etc.). The only way to determine error context is to
 ///   look at stdout and find out what happened from logs.
-/// * Logging to stdout. No option here.
+/// * Logs everything to stdout. No choice.
 ///
 /// ## Example
 /// ```no_run
@@ -47,7 +47,7 @@ pub use benchmark::{BenchmarkResults, Measurements};
 /// # }
 /// ```
 pub struct Simulation<P> {
-    /// Parties who run a protocol
+    /// Parties running a protocol
     ///
     /// Field is exposed mainly to allow examining parties state after simulation is completed.
     pub parties: Vec<P>,

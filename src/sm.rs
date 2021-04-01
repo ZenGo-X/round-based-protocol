@@ -50,7 +50,7 @@ pub trait StateMachine {
 
     /// Performs some expensive computation
     ///
-    /// If [`StateMachine`] executes at green thread (in async environment), it will be typically
+    /// If [`StateMachine`] is executed at green thread (in async environment), it will be typically
     /// moved to dedicated thread at thread pool before calling `.proceed()` method.
     ///
     /// ## Returns
@@ -79,7 +79,7 @@ pub trait StateMachine {
     /// deadline will be set.
     fn round_timeout(&self) -> Option<Duration>;
 
-    /// Triggering method after reaching [round_timeout](Self::round_timeout)
+    /// Method is triggered after reaching [round_timeout](Self::round_timeout)
     ///
     /// Reaching timeout always aborts computation, no matter what error is returned: critical or not.
     fn round_timeout_reached(&mut self) -> Self::Err;
@@ -99,7 +99,7 @@ pub trait StateMachine {
     /// After `Some(_)` has been obtained via this method, StateMachine must be utilized (dropped).
     fn pick_output(&mut self) -> Option<Result<Self::Output, Self::Err>>;
 
-    /// Number of current round
+    /// Sequential number of current round
     ///
     /// Can be increased by 1 as result of calling either [proceed](StateMachine::proceed) or
     /// [handle_incoming](StateMachine::handle_incoming) methods. Changing round number in any other way
@@ -147,7 +147,7 @@ impl<B> Msg<B> {
     }
 }
 
-/// Allows to distinguish a critical error from not critical
+/// Distinguish a critical error from not critical
 ///
 /// For semantic, see [StateMachine trait](StateMachine) (in particular,
 /// [handle_incoming](StateMachine::handle_incoming) and [proceed](StateMachine::proceed)

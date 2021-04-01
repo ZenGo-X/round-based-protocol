@@ -17,7 +17,7 @@ pub mod watcher;
 /// Executes protocol in async environment using [tokio] backend
 ///
 /// In the most simple setting, you just provide protocol initial state, stream of incoming
-/// messages, and sink for outcoming messages, and you're able to easily execute it:
+/// messages, and sink for outgoing messages, and you're able to easily execute it:
 /// ```no_run
 /// # use futures::stream::{self, Stream, FusedStream};
 /// # use futures::sink::{self, Sink, SinkExt};
@@ -32,39 +32,40 @@ pub mod watcher;
 ///     // ...
 /// # stream::pending()
 /// }
-/// fn outcoming() -> impl Sink<Msg<M>, Error=Error> + Unpin {
+/// fn outgoing() -> impl Sink<Msg<M>, Error=Error> + Unpin {
 ///     // ...
 /// # sink::drain().with(|x| futures::future::ok(x))
 /// }
 /// # async fn execute_protocol<State>() -> Result<(), round_based::async_runtime::Error<State::Err, Error, Error>>
 /// # where State: StateMachine<MessageBody = M, Err = Error> + Constructable + Send + 'static
 /// # {
-/// let output: State::Output = AsyncProtocol::new(State::initial(), incoming(), outcoming())
+/// let output: State::Output = AsyncProtocol::new(State::initial(), incoming(), outgoing())
 ///     .run().await?;
 /// // ...
 /// # let _ = output; Ok(())
 /// # }
 /// ```
 ///
-/// Note that in most cases it's your responsibility to provide a secure P2P channels to every
-/// party.
+/// Note that if the protocol has some cryptographical assumptions on transport channel (e.g. messages
+/// should be ecrypted, authenticated), then stream and sink must meet these assumptions (e.g. encrypt,
+/// authenticate messages)
 pub struct AsyncProtocol<SM, I, O, W = BlindWatcher> {
     state: Option<SM>,
     incoming: I,
-    outcoming: O,
+    outgoing: O,
     deadline: Option<time::Instant>,
     current_round: Option<u16>,
     watcher: W,
 }
 
 impl<SM, I, O> AsyncProtocol<SM, I, O, BlindWatcher> {
-    /// Construct new executor from protocol initial state, channels of incoming and outcoming
+    /// Constructs new protocol executor from initial state, channels of incoming and outgoing
     /// messages
-    pub fn new(state: SM, incoming: I, outcoming: O) -> Self {
+    pub fn new(state: SM, incoming: I, outgoing: O) -> Self {
         Self {
             state: Some(state),
             incoming,
-            outcoming,
+            outgoing,
             deadline: None,
             current_round: None,
             watcher: BlindWatcher,
@@ -84,7 +85,7 @@ impl<SM, I, O, W> AsyncProtocol<SM, I, O, W> {
         AsyncProtocol {
             state: self.state,
             incoming: self.incoming,
-            outcoming: self.outcoming,
+            outgoing: self.outgoing,
             deadline: self.deadline,
             current_round: self.current_round,
             watcher,
@@ -111,7 +112,7 @@ where
 
         self.refresh_timer()?;
         self.proceed_if_needed().await?;
-        self.send_outcoming().await?;
+        self.send_outgoing().await?;
         self.refresh_timer()?;
 
         if let Some(result) = self.finish_if_possible() {
@@ -120,11 +121,11 @@ where
 
         loop {
             self.handle_incoming().await?;
-            self.send_outcoming().await?;
+            self.send_outgoing().await?;
             self.refresh_timer()?;
 
             self.proceed_if_needed().await?;
-            self.send_outcoming().await?;
+            self.send_outgoing().await?;
             self.refresh_timer()?;
 
             if let Some(result) = self.finish_if_possible() {
@@ -171,12 +172,12 @@ where
         Ok(())
     }
 
-    async fn send_outcoming(&mut self) -> Result<(), Error<SM::Err, IErr, O::Error>> {
+    async fn send_outgoing(&mut self) -> Result<(), Error<SM::Err, IErr, O::Error>> {
         let state = self.state.as_mut().ok_or(InternalError::MissingState)?;
 
         if !state.message_queue().is_empty() {
             let mut msgs = stream::iter(state.message_queue().drain(..).map(Ok));
-            self.outcoming
+            self.outgoing
                 .send_all(&mut msgs)
                 .await
                 .map_err(Error::Send)?;
@@ -238,7 +239,7 @@ pub enum Error<E, RE, SE> {
     Recv(RE),
     /// Incoming channel closed (got EOF)
     RecvEof,
-    /// Sending outcoming message resulted in error
+    /// Sending outgoing message resulted in error
     Send(SE),
     /// [Handling incoming](crate::StateMachine::handle_incoming) message produced critical error
     HandleIncoming(E),

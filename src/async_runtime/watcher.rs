@@ -6,8 +6,10 @@ use crate::StateMachine;
 
 /// Looks after protocol execution in [AsyncProtocol](super::AsyncProtocol)
 ///
-/// Currently it's only able to see caught non critical errors, API will be expanded.
+/// Currently it's only able to see caught non critical errors, API will be expanded (see [#1][issue]).
 /// It will be able to track incoming messages, changing round number, etc.
+///
+/// [issue]: https://github.com/ZenGo-X/round-based-protocol/issues/1
 pub trait ProtocolWatcher<SM: StateMachine> {
     /// StateMachine produced a not critical error. Execution continues.
     fn caught_non_critical_error(&mut self, when: When, err: SM::Err);
