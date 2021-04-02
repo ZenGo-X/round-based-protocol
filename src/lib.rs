@@ -68,6 +68,8 @@
 //! For development purposes, you can also find useful [Simulation](crate::dev::Simulation) and
 //! [AsyncSimulation](dev::AsyncSimulation) simulations that can run protocols locally.
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 pub mod containers;
 
 #[cfg(feature = "dev")]
