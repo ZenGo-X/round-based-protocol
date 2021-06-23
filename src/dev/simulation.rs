@@ -18,9 +18,6 @@ pub use benchmark::{BenchmarkResults, Measurements};
 /// performance regression.
 ///
 /// ## Limitations
-/// * Currently, it's a bit silly and doesn't support specific [StateMachine](crate::sm::StateMachine)
-///   implementations (e.g. it'll panic if SM wants to [proceed](crate::sm::StateMachine::wants_to_proceed),
-///   but there are some messages sent by other parties which should be handled)
 /// * No proper error handling. It should attach a context to returning error (like current round,
 ///   what we was doing when error occurred, etc.). The only way to determine error context is to
 ///   look at stdout and find out what happened from logs.
@@ -51,7 +48,7 @@ pub struct Simulation<P> {
     ///
     /// Field is exposed mainly to allow examining parties state after simulation is completed.
     pub parties: Vec<P>,
-    benchmark: Option<Benchmark>,
+    benchmark: Benchmark,
 }
 
 impl<P> Simulation<P> {
@@ -59,7 +56,7 @@ impl<P> Simulation<P> {
     pub fn new() -> Self {
         Self {
             parties: vec![],
-            benchmark: None,
+            benchmark: Benchmark::disabled(),
         }
     }
 
@@ -73,9 +70,9 @@ impl<P> Simulation<P> {
     /// is completed
     pub fn enable_benchmarks(&mut self, enable: bool) -> &mut Self {
         if enable {
-            self.benchmark = Some(Benchmark::new())
+            self.benchmark = Benchmark::enabled()
         } else {
-            self.benchmark = None
+            self.benchmark = Benchmark::disabled()
         }
         self
     }
@@ -86,19 +83,16 @@ impl<P> Simulation<P> {
     /// proceeding particular rounds. Benchmarks might help to find out which rounds are cheap to
     /// proceed, and which of them are expensive to compute.
     pub fn benchmark_results(&self) -> Option<&BenchmarkResults> {
-        self.benchmark.as_ref().map(|b| b.results())
+        self.benchmark.results()
     }
 }
 
 impl<P> Simulation<P>
 where
     P: StateMachine,
-    // Needed for logging:
     P: Debug,
     P::Err: Debug,
-    P::MessageBody: Debug,
-    // Needed to transmit a single broadcast message to every party:
-    P::MessageBody: Clone,
+    P::MessageBody: Debug + Clone,
 {
     /// Runs a simulation
     ///
@@ -108,92 +102,177 @@ where
     ///
     /// ## Panics
     /// * Number of parties is less than 2
-    /// * Party behaves unexpectedly (see [limitations](Simulation#limitations))
     pub fn run(&mut self) -> Result<Vec<P::Output>, P::Err> {
         assert!(self.parties.len() >= 2, "at least two parties required");
 
+        let mut parties: Vec<_> = self
+            .parties
+            .iter_mut()
+            .map(|p| Party { state: p })
+            .collect();
+
         println!("Simulation starts");
+
+        let mut msgs_pull = vec![];
+
+        for party in &mut parties {
+            party.proceed_if_needed(&mut self.benchmark)?;
+            party.send_outgoing(&mut msgs_pull);
+        }
+
+        if let Some(results) = finish_if_possible(&mut parties)? {
+            return Ok(results);
+        }
+
         loop {
-            let mut msgs: Vec<Msg<P::MessageBody>> = vec![];
-            for party in &mut self.parties {
-                if party.wants_to_proceed() {
-                    println!("Party {} wants to proceed", party.party_ind());
-                    println!("  - before: {:?}", party);
+            let msgs_pull_frozen = msgs_pull.split_off(0);
 
-                    let round_old = party.current_round();
-                    let stopwatch = self.benchmark.as_mut().map(|b| b.start());
-                    match party.proceed() {
-                        Ok(()) => (),
-                        Err(err) if err.is_critical() => return Err(err),
-                        Err(err) => {
-                            println!("Non-critical error encountered: {:?}", err);
-                        }
-                    }
-                    let round_new = party.current_round();
-                    let duration = stopwatch
-                        .filter(|_| round_old + 1 == round_new)
-                        .map(|s| s.stop_and_save(round_old));
-
-                    println!("  - after : {:?}", party);
-                    println!("  - time  : {:?}", duration);
-                }
-
-                println!(
-                    "Party {} sends {} message(s)",
-                    party.party_ind(),
-                    party.message_queue().len()
-                );
-                msgs.append(party.message_queue())
+            for party in &mut parties {
+                party.handle_incoming(&msgs_pull_frozen)?;
+                party.send_outgoing(&mut msgs_pull);
             }
 
-            for party in &mut self.parties {
-                let party_i = party.party_ind();
-                let msgs = msgs.iter().filter(|m| {
-                    m.sender != party_i && (m.receiver.is_none() || m.receiver == Some(party_i))
-                });
-
-                for msg in msgs {
-                    assert!(
-                        !party.wants_to_proceed(),
-                        "simulation is silly and doesn't expect party \
-                         to wanna proceed at the middle of message handling"
-                    );
-                    println!(
-                        "Party {} got message from={}, broadcast={}: {:?}",
-                        party.party_ind(),
-                        msg.sender,
-                        msg.receiver.is_none(),
-                        msg,
-                    );
-                    println!("  - before: {:?}", party);
-                    match party.handle_incoming(msg.clone()) {
-                        Ok(()) => (),
-                        Err(err) if err.is_critical() => return Err(err),
-                        Err(err) => {
-                            println!("Non-critical error encountered: {:?}", err);
-                        }
-                    }
-                    println!("  - after : {:?}", party);
-                }
+            for party in &mut parties {
+                party.proceed_if_needed(&mut self.benchmark)?;
+                party.send_outgoing(&mut msgs_pull);
             }
 
-            let is_finished = self.parties[0].is_finished();
-            let same_answer_for_all_parties =
-                self.parties.iter().all(|p| p.is_finished() == is_finished);
-            assert!(same_answer_for_all_parties);
-
-            if is_finished {
-                let mut results = vec![];
-                for party in &mut self.parties {
-                    results.push(
-                        party
-                            .pick_output()
-                            .expect("is_finished == true, but pick_output == None")?,
-                    )
-                }
-
-                break Ok(results);
+            if let Some(results) = finish_if_possible(&mut parties)? {
+                return Ok(results);
             }
         }
+    }
+}
+
+struct Party<'p, P> {
+    state: &'p mut P,
+}
+
+impl<'p, P> Party<'p, P>
+where
+    P: StateMachine,
+    P: Debug,
+    P::Err: Debug,
+    P::MessageBody: Debug + Clone,
+{
+    pub fn proceed_if_needed(&mut self, benchmark: &mut Benchmark) -> Result<(), P::Err> {
+        if !self.state.wants_to_proceed() {
+            return Ok(());
+        }
+
+        println!("Party {} wants to proceed", self.state.party_ind());
+        println!("  - before: {:?}", self.state);
+
+        let round_old = self.state.current_round();
+        let stopwatch = benchmark.start();
+        match self.state.proceed() {
+            Ok(()) => (),
+            Err(err) if err.is_critical() => return Err(err),
+            Err(err) => {
+                println!("Non-critical error encountered: {:?}", err);
+            }
+        }
+        let round_new = self.state.current_round();
+        let duration = if round_old != round_new {
+            Some(stopwatch.stop_and_save(round_old))
+        } else {
+            None
+        };
+
+        println!("  - after : {:?}", self.state);
+        println!("  - took  : {:?}", duration);
+        println!();
+
+        Ok(())
+    }
+
+    pub fn send_outgoing(&mut self, msgs_pull: &mut Vec<Msg<P::MessageBody>>) {
+        if !self.state.message_queue().is_empty() {
+            println!(
+                "Party {} sends {} message(s)",
+                self.state.party_ind(),
+                self.state.message_queue().len()
+            );
+            println!();
+
+            msgs_pull.append(self.state.message_queue())
+        }
+    }
+
+    pub fn handle_incoming(&mut self, msgs_pull: &[Msg<P::MessageBody>]) -> Result<(), P::Err> {
+        for msg in msgs_pull {
+            if Some(self.state.party_ind()) != msg.receiver
+                && (msg.receiver.is_some() || msg.sender == self.state.party_ind())
+            {
+                continue;
+            }
+            println!(
+                "Party {} got message from={}, broadcast={}: {:?}",
+                self.state.party_ind(),
+                msg.sender,
+                msg.receiver.is_none(),
+                msg.body,
+            );
+            println!("  - before: {:?}", self.state);
+            match self.state.handle_incoming(msg.clone()) {
+                Ok(()) => (),
+                Err(err) if err.is_critical() => return Err(err),
+                Err(err) => {
+                    println!("Non-critical error encountered: {:?}", err);
+                }
+            }
+            println!("  - after : {:?}", self.state);
+            println!();
+        }
+        Ok(())
+    }
+}
+
+fn finish_if_possible<P>(parties: &mut Vec<Party<P>>) -> Result<Option<Vec<P::Output>>, P::Err>
+where
+    P: StateMachine,
+    P: Debug,
+    P::Err: Debug,
+    P::MessageBody: Debug + Clone,
+{
+    let someone_is_finished = parties.iter().any(|p| p.state.is_finished());
+    if !someone_is_finished {
+        return Ok(None);
+    }
+
+    let everyone_are_finished = parties.iter().all(|p| p.state.is_finished());
+    if everyone_are_finished {
+        let mut results = vec![];
+        for party in parties {
+            results.push(
+                party
+                    .state
+                    .pick_output()
+                    .expect("is_finished == true, but pick_output == None")?,
+            )
+        }
+
+        println!("Simulation is finished");
+        println!();
+
+        Ok(Some(results))
+    } else {
+        let finished: Vec<_> = parties
+            .iter()
+            .filter(|p| p.state.is_finished())
+            .map(|p| p.state.party_ind())
+            .collect();
+        let not_finished: Vec<_> = parties
+            .iter()
+            .filter(|p| !p.state.is_finished())
+            .map(|p| p.state.party_ind())
+            .collect();
+
+        println!("Warning: some of parties have finished the protocol, but other parties have not");
+        println!("Finished parties:     {:?}", finished);
+        println!("Not finished parties: {:?}", not_finished);
+        println!();
+
+        Ok(None)
     }
 }

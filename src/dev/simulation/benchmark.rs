@@ -4,14 +4,18 @@ use std::time::{Duration, Instant};
 
 /// Measures duration of round proceeding
 pub struct Benchmark {
-    results: BenchmarkResults,
+    results: Option<BenchmarkResults>,
 }
 
 impl Benchmark {
-    pub fn new() -> Self {
+    pub fn enabled() -> Self {
         Self {
-            results: Default::default(),
+            results: Some(Default::default()),
         }
+    }
+
+    pub fn disabled() -> Self {
+        Self { results: None }
     }
 
     pub fn start(&mut self) -> Stopwatch {
@@ -22,16 +26,18 @@ impl Benchmark {
     }
 
     fn add_measurement(&mut self, round: u16, time: Duration) {
-        let m = self.results.entry(round).or_insert(Measurements {
-            n: 0,
-            total_time: Duration::default(),
-        });
-        m.n += 1;
-        m.total_time += time;
+        if let Some(results) = self.results.as_mut() {
+            let m = results.entry(round).or_insert(Measurements {
+                n: 0,
+                total_time: Duration::default(),
+            });
+            m.n += 1;
+            m.total_time += time;
+        }
     }
 
-    pub fn results(&self) -> &BenchmarkResults {
-        &self.results
+    pub fn results(&self) -> Option<&BenchmarkResults> {
+        self.results.as_ref()
     }
 }
 
