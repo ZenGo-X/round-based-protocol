@@ -23,9 +23,23 @@ bincode = "1"
 pin-project-lite = "0.2"
 async-stream = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
+round-based-derive = { path = "../round-based-derive", optional = true }
 
 [dev-dependencies]
 rand = "0.8"
 rand_chacha = "0.3"
 sha2 = "0.9"
 hex = "*"
+trybuild = "1"
+
+[features]
+default = []
+derive = ["round-based-derive"]
+
+[[example]]
+name = "mpc_random_generation"
+required-features = ["derive"]
+
+[[test]]
+name = "derive"
+required-features = ["derive"]

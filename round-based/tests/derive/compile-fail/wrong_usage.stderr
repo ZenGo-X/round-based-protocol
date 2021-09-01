@@ -1,0 +1,35 @@
+error: named variants are not allowed in ProtocolMessage
+ --> $DIR/wrong_usage.rs:9:5
+  |
+9 |     VariantB { n: u32 },
+  |     ^^^^^^^^
+
+error: this variant must contain exactly one field to be valid ProtocolMessage
+  --> $DIR/wrong_usage.rs:11:5
+   |
+11 |     VariantC(u32, String),
+   |     ^^^^^^^^
+
+error: this variant must contain exactly one field to be valid ProtocolMessage
+  --> $DIR/wrong_usage.rs:13:5
+   |
+13 |     VariantD(),
+   |     ^^^^^^^^
+
+error: unit variants are not allowed in ProtocolMessage
+  --> $DIR/wrong_usage.rs:15:5
+   |
+15 |     VariantE,
+   |     ^^^^^^^^
+
+error: only enum may implement ProtocolMessage
+  --> $DIR/wrong_usage.rs:20:1
+   |
+20 | struct Msg2 {
+   | ^^^^^^
+
+error: only enum may implement ProtocolMessage
+  --> $DIR/wrong_usage.rs:26:1
+   |
+26 | union Msg3 {
+   | ^^^^^

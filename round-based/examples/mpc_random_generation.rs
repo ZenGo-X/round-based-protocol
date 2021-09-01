@@ -1,16 +1,16 @@
-use round_based::delivery::{DeliverOutgoingExt, Delivery, Outgoing};
-use round_based::party::{self, Mpc, MpcParty};
-use round_based::rounds::{
-    store::{RoundInput, RoundInputError},
-    ProtocolMessage, ReceiveError, RoundMessage, Rounds,
-};
-use round_based::simulation::Simulation;
-
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{digest::Output, Digest, Sha256};
 
-#[derive(Clone, Debug, PartialEq)]
+use round_based::party;
+use round_based::rounds::{
+    store::{RoundInput, RoundInputError},
+    ReceiveError, Rounds,
+};
+use round_based::simulation::Simulation;
+use round_based::{DeliverOutgoingExt, Delivery, Mpc, MpcParty, Outgoing, ProtocolMessage};
+
+#[derive(Clone, Debug, PartialEq, ProtocolMessage)]
 pub enum Msg {
     CommitMsg(CommitMsg),
     DecommitMsg(DecommitMsg),
@@ -122,39 +122,6 @@ pub enum Error<RecvErr, SendErr> {
     Round2MismatchedOwnMessage(RoundInputError),
 
     PartiesOpenedRandomnessDoesntMatchCommitment { guilty_parties: Vec<u16> },
-}
-
-impl ProtocolMessage for Msg {
-    fn variant_id(&self) -> u16 {
-        match self {
-            Msg::CommitMsg(_) => 1,
-            Msg::DecommitMsg(_) => 2,
-        }
-    }
-}
-impl RoundMessage<CommitMsg> for Msg {
-    const VARIANT_ID: u16 = 1;
-    fn into_round_message(self) -> Option<CommitMsg> {
-        match self {
-            Msg::CommitMsg(m) => Some(m),
-            _ => None,
-        }
-    }
-    fn from_round_message(msg: CommitMsg) -> Self {
-        Msg::CommitMsg(msg)
-    }
-}
-impl RoundMessage<DecommitMsg> for Msg {
-    const VARIANT_ID: u16 = 2;
-    fn into_round_message(self) -> Option<DecommitMsg> {
-        match self {
-            Msg::DecommitMsg(m) => Some(m),
-            _ => None,
-        }
-    }
-    fn from_round_message(msg: DecommitMsg) -> Self {
-        Msg::DecommitMsg(msg)
-    }
 }
 
 #[tokio::main]
