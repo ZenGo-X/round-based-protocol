@@ -1,505 +1,587 @@
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::convert::{TryFrom, TryInto};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
-use tokio::io;
-use tokio::net;
-use tokio_rustls::{TlsAcceptor, TlsConnector};
+use futures::{ready, Stream};
+use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::delivery::two_party::insecure::{Side, TwoParty};
 use phantom_type::PhantomType;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use std::ops;
+use pin_project_lite::pin_project;
+use serde::{de::DeserializeOwned, Serialize};
+
+use crate::{DeliverOutgoing, Delivery, Incoming, Outgoing};
 
 pub mod insecure;
+pub mod tls;
 
-pub type TwoPartyServerTls<M> = TwoParty<
-    M,
-    io::ReadHalf<tokio_rustls::server::TlsStream<net::TcpStream>>,
-    io::WriteHalf<tokio_rustls::server::TlsStream<net::TcpStream>>,
->;
-pub type TwoPartyClientTls<M> = TwoParty<
-    M,
-    io::ReadHalf<tokio_rustls::client::TlsStream<net::TcpStream>>,
-    io::WriteHalf<tokio_rustls::client::TlsStream<net::TcpStream>>,
->;
+pub const SERVER_ID: u16 = 0;
+pub const CLIENT_ID: u16 = 1;
 
-pub struct TlsServer<M> {
-    listener: net::TcpListener,
-    acceptor: TlsAcceptor,
-
-    buffer_capacity: usize,
-    msg_len_limit: usize,
-
-    _ph: PhantomType<M>,
+/// A delivery link established between two parties that can be used to exchange messages `M`
+pub struct TwoParty<M, R, W> {
+    recv: RecvLink<M, R>,
+    send: SendLink<W>,
 }
 
-impl<M> TlsServer<M>
+impl<M, R, W> TwoParty<M, R, W>
 where
     M: Serialize + DeserializeOwned + Clone,
+    R: AsyncRead + Send + Unpin,
+    W: AsyncWrite + Send + Unpin,
 {
-    /// Binds a TCP server at given address with given TLS config
+    /// Constructs a two party link from raw byte channels
     ///
-    /// If you need more precise control on socket binding, use [new](Self::new) constructor.
-    pub async fn bind<A: net::ToSocketAddrs>(addr: A, config: ServerTlsConfig) -> io::Result<Self> {
-        Ok(Self::new(net::TcpListener::bind(addr).await?, config))
-    }
-
-    /// Wraps existing TcpListener and TLS config into TlsServer
-    ///
-    /// If you need to provide custom [rustls::ServerConfig], use [with_acceptor] constructor.
-    ///
-    /// [with_rustls_config]: Self::with_rustls_config
-    pub fn new(listener: net::TcpListener, config: ServerTlsConfig) -> Self {
-        Self::with_acceptor(listener, Arc::new(config.config).into())
-    }
-
-    /// Wraps existing TcpListener and acceptor into TlsServer
-    pub fn with_acceptor(listener: net::TcpListener, acceptor: TlsAcceptor) -> Self {
+    /// * `read_link` is an [`AsyncRead`] that reads bytes sent by counterparty
+    /// * `write_link` is an [`AsyncWrite`] that sends bytes to the counterparty
+    /// * `capacity` is an initial capacity of internal buffers. Buffers grow on sending/receiving
+    ///   larger messages
+    /// * `message_size_limit` limits length of serialized message. Sending/receiving larger messages
+    ///   results into error that closes a channel
+    /// * `side` determines whether this party is a server or a client. \
+    ///   Basically, it affects only counterparty index, ie. `Side::Server` incoming messages will
+    ///   have `sender = 1`, and `Side::Client` incoming messages will have `sender = 0`
+    pub fn new(
+        side: Side,
+        read_link: R,
+        write_link: W,
+        capacity: usize,
+        message_size_limit: usize,
+    ) -> Self {
+        let counterparty_id = match side {
+            Side::Server => CLIENT_ID,
+            Side::Client => SERVER_ID,
+        };
         Self {
-            listener,
-            acceptor,
+            recv: RecvLink::new(read_link, capacity, message_size_limit, counterparty_id),
+            send: SendLink::new(write_link, capacity, message_size_limit, counterparty_id),
+        }
+    }
+}
 
-            buffer_capacity: 4096,
-            msg_len_limit: 10_000,
+impl<M, R, W> Delivery<M> for TwoParty<M, R, W>
+where
+    M: Serialize + DeserializeOwned + Clone + Unpin + 'static,
+    R: AsyncRead + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin,
+{
+    type Send = SendLink<W>;
+    type Receive = RecvLink<M, R>;
+    type ReceiveError = io::Error;
 
+    fn split(self) -> (Self::Receive, Self::Send) {
+        (self.recv, self.send)
+    }
+}
+
+pub enum Side {
+    Server,
+    Client,
+}
+
+pin_project! {
+    /// An outgoing link to the party
+    ///
+    /// Wraps AsyncWrite that delivers bytes to the party, and implements [DeliverOutgoing].
+    pub struct SendLink<S> {
+        #[pin]
+        link: S,
+        buffer: Vec<u8>,
+        buffer_filled: usize,
+        buffer_sent: usize,
+        msg_len_limit: usize,
+
+        counterparty_id: u16,
+    }
+}
+
+impl<L> SendLink<L> {
+    pub fn new(link: L, capacity: usize, msg_len_limit: usize, counterparty_id: u16) -> Self {
+        Self {
+            link,
+            buffer: vec![0; capacity],
+            buffer_filled: 0,
+            buffer_sent: 0,
+            msg_len_limit,
+            counterparty_id,
+        }
+    }
+}
+
+impl<L> SendLink<L> {
+    fn buffer_capacity(self: Pin<&Self>) -> usize {
+        let me = self.project_ref();
+        me.buffer.len() - me.buffer_filled
+    }
+}
+
+impl<M, S> DeliverOutgoing<M> for SendLink<S>
+where
+    M: Serialize + Clone + Unpin,
+    S: AsyncWrite,
+{
+    type Prepared = PreparedSend<M>;
+    type Error = io::Error;
+
+    fn prepare(self: Pin<&Self>, msg: Outgoing<&M>) -> io::Result<Self::Prepared> {
+        if !(msg.recipient.is_none() || msg.recipient == Some(self.counterparty_id)) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "recipient index mismatched",
+            ));
+        }
+
+        let me = self.project_ref();
+
+        let serialized_size = bincode::serialized_size(&msg.msg)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
+            .try_into()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        if usize::from(serialized_size) > *me.msg_len_limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "message is too large to fit into the intermediate buffer",
+            ));
+        }
+        Ok(PreparedSend {
+            serialized_size,
+            msg: msg.msg.clone(),
+        })
+    }
+
+    fn poll_start_send(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context,
+        msg: &Self::Prepared,
+    ) -> Poll<io::Result<()>> {
+        let me = self.as_mut().project();
+
+        // Check if the buffer is able to fit the message
+        if usize::from(msg.serialized_size) + 2 > me.buffer.len() {
+            // if it does not, we need to grow the buffer
+            me.buffer.resize(usize::from(msg.serialized_size) + 2, 0);
+        }
+
+        // Check if we have enough capacity in the buffer
+        while usize::from(msg.serialized_size) + 2 > self.as_ref().buffer_capacity() {
+            // Not enough capacity - need to flush the buffer
+            match <Self as DeliverOutgoing<M>>::poll_flush(self.as_mut(), cx) {
+                Poll::Ready(Ok(())) => (),
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            };
+        }
+
+        let me = self.as_mut().project();
+
+        // Serialize msg to the buffer
+        me.buffer[*me.buffer_filled..*me.buffer_filled + 2]
+            .copy_from_slice(&msg.serialized_size.to_be_bytes());
+        *me.buffer_filled += 2;
+
+        bincode::serialize_into(
+            &mut me.buffer[*me.buffer_filled..*me.buffer_filled + usize::from(msg.serialized_size)],
+            &msg.msg,
+        )
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        *me.buffer_filled += usize::from(msg.serialized_size);
+
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+        let me = self.as_mut().project();
+
+        if *me.buffer_filled == 0 {
+            // Have nothing to send
+            Poll::Ready(Ok(()))
+        } else if *me.buffer_sent < *me.buffer_filled {
+            // We have more data to write
+            match me
+                .link
+                .poll_write(cx, &me.buffer[*me.buffer_sent..*me.buffer_filled])
+            {
+                Poll::Ready(Ok(written)) => {
+                    *me.buffer_sent += written;
+                    // Need to repeat flush
+                    <Self as DeliverOutgoing<M>>::poll_flush(self, cx)
+                }
+                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+                Poll::Pending => Poll::Pending,
+            }
+        } else {
+            // We've wrote all the data to the I/O, need to flush it
+            ready!(me.link.poll_flush(cx))?;
+            *me.buffer_filled = 0;
+            *me.buffer_sent = 0;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+        ready!(<Self as DeliverOutgoing<M>>::poll_flush(self.as_mut(), cx))?;
+        let me = self.project();
+        me.link.poll_shutdown(cx)
+    }
+}
+
+pub struct PreparedSend<M> {
+    msg: M,
+    serialized_size: u16,
+}
+
+pin_project! {
+    /// An incoming link from the party
+    ///
+    /// Wraps AsyncRead that receives bytes from the party, and implements [`Stream<Item=Incoming<M>>`](Stream).
+    pub struct RecvLink<M, R> {
+        #[pin]
+        link: R,
+
+        frame: Vec<u8>,
+        msg_len_limit: usize,
+        bytes_received: usize,
+
+        counterparty_id: u16,
+
+        _ph: PhantomType<M>,
+    }
+}
+
+impl<M, L> RecvLink<M, L>
+where
+    L: AsyncRead,
+    M: DeserializeOwned,
+{
+    /// Constructs a new receive link
+    ///
+    /// `link` is a `AsyncRead` that receives bytes from counterparty. `capacity` is a maximum length
+    /// of serialized message (receiving bigger message results into error).
+    pub fn new(link: L, capacity: usize, msg_len_limit: usize, counterparty_id: u16) -> Self {
+        RecvLink {
+            link,
+            frame: vec![0; capacity],
+            bytes_received: 0,
+            counterparty_id,
+            msg_len_limit,
             _ph: PhantomType::new(),
         }
     }
-
-    /// Sets internal buffer capacity
-    ///
-    /// Ideally, capacity should be chosen to fit 2 serialized messages, ie. choose it to be
-    /// `2*average_msg_size`. Buffer grows if it's too small to send/receive a single message unless
-    /// it exceeds [message size limit].
-    ///
-    /// [message size limit]: Self::set_message_size_limit
-    ///
-    /// Calling this method affects only subsequently accepted connections.
-    ///
-    /// Default value is 4096 bytes.
-    pub fn set_buffer_capacity(&mut self, capacity: usize) {
-        self.buffer_capacity = capacity
-    }
-
-    /// Limits length of serialized messages being sent or received
-    ///
-    /// Sending / receiving larger messages results into error and causes channel to be closed.
-    ///
-    /// Calling this method affects only subsequently accepted connections.
-    ///
-    /// Default value is 10KB (10 000 bytes).
-    pub fn set_message_size_limit(&mut self, limit: usize) {
-        self.msg_len_limit = limit;
-    }
-
-    pub async fn accept(&mut self) -> io::Result<(TwoPartyServerTls<M>, SocketAddr)> {
-        let (conn, addr) = self.listener.accept().await?;
-        let tls_conn = self.acceptor.accept(conn).await?;
-        let (read, write) = io::split(tls_conn);
-        Ok((
-            TwoPartyServerTls::new(
-                Side::Server,
-                read,
-                write,
-                self.buffer_capacity,
-                self.msg_len_limit,
-            ),
-            addr,
-        ))
-    }
-}
-impl<M> ops::Deref for TlsServer<M> {
-    type Target = net::TcpListener;
-    fn deref(&self) -> &Self::Target {
-        &self.listener
-    }
 }
 
-#[derive(Clone)]
-pub struct ServerTlsConfig {
-    config: rustls::ServerConfig,
+fn next_message_available(frame: &[u8], bytes_received: usize) -> bool {
+    if bytes_received < 2 {
+        return false;
+    }
+    let msg_len = u16::from_be_bytes(
+        <[u8; 2]>::try_from(&frame[0..2]).expect("we took exactly two first bytes"),
+    );
+    bytes_received >= usize::from(msg_len) + 2
 }
 
-impl ServerTlsConfig {
-    /// Creates incomplete TLS server config
-    ///
-    /// To complete it, you need to specify private key, and clients CA. Resulting config is fixed
-    /// to support only TLSv1.3 with ciphersuite TLS13_CHACHA20_POLY1305_SHA256.
-    pub fn new() -> Self {
-        let mut config = rustls::ServerConfig::with_ciphersuites(
-            rustls::AllowAnyAuthenticatedClient::new(rustls::RootCertStore::empty()),
-            &[&rustls::ciphersuite::TLS13_CHACHA20_POLY1305_SHA256],
-        );
-        config.versions = vec![rustls::ProtocolVersion::TLSv1_3];
-
-        Self { config }
-    }
-
-    /// Sets clients root of trust
-    ///
-    /// Enables client authentication, ie. client must provide a certificate matching given CA.
-    pub fn set_clients_ca(mut self, der_cert: &rustls::Certificate) -> Result<Self, webpki::Error> {
-        let mut store = rustls::RootCertStore::empty();
-        store.add(der_cert)?;
-        self.config
-            .set_client_certificate_verifier(rustls::AllowAnyAuthenticatedClient::new(store));
-        Ok(self)
-    }
-
-    /// Disables client authentication
-    pub fn disable_client_authentication(mut self) -> Self {
-        self.config
-            .set_client_certificate_verifier(Arc::new(rustls::NoClientAuth));
-        self
-    }
-
-    /// Sets server private key and a chain of certificates
-    pub fn set_private_key(
-        mut self,
-        cert: Vec<rustls::Certificate>,
-        private_key: rustls::PrivateKey,
-    ) -> Result<Self, rustls::TLSError> {
-        self.config.set_single_cert(cert, private_key)?;
-        Ok(self)
-    }
-}
-
-pub struct ClientBuilder {
-    buffer_capacity: usize,
+fn grow_buffer_if_needed(
+    frame: &mut Vec<u8>,
+    bytes_received: usize,
     msg_len_limit: usize,
+) -> io::Result<()> {
+    if bytes_received < 2 {
+        return Ok(());
+    }
+
+    let msg_len = u16::from_be_bytes(
+        <[u8; 2]>::try_from(&frame[0..2]).expect("we took exactly two first bytes"),
+    );
+
+    if usize::from(msg_len) > msg_len_limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "receiving message too long",
+        ));
+    }
+
+    if frame.len() < 2 + usize::from(msg_len) {
+        frame.resize(2 + usize::from(msg_len), 0)
+    }
+
+    Ok(())
 }
 
-impl ClientBuilder {
-    /// Constructs a client builder
-    pub fn new() -> Self {
-        Self {
-            buffer_capacity: 4096,
-            msg_len_limit: 10_000,
+impl<M, R> Stream for RecvLink<M, R>
+where
+    R: AsyncRead,
+    M: DeserializeOwned,
+{
+    type Item = io::Result<Incoming<M>>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+        let mut me = self.project();
+
+        // Unless we have message to parse, we need to read more bytes
+        while !next_message_available(&me.frame, *me.bytes_received) {
+            grow_buffer_if_needed(&mut *me.frame, *me.bytes_received, *me.msg_len_limit)?;
+
+            let bytes_received = *me.bytes_received;
+            let mut buf = ReadBuf::new(&mut me.frame[bytes_received..]);
+
+            let bytes_received = match me.link.as_mut().poll_read(cx, &mut buf) {
+                Poll::Ready(Ok(())) => buf.filled().len(),
+                Poll::Ready(Err(e)) => return Poll::Ready(Some(Err(e))),
+                Poll::Pending => return Poll::Pending,
+            };
+
+            if bytes_received == 0 {
+                // No data was read => EOF reached
+                if *me.bytes_received != 0 {
+                    // We have some bytes received but not handled => EOF is unexpected
+                    return Poll::Ready(Some(Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "got EOF at the middle of the message",
+                    ))));
+                }
+                // Otherwise, stream is peacefully terminated
+                return Poll::Ready(None);
+            }
+            *me.bytes_received += bytes_received;
         }
-    }
 
-    /// Sets internal buffer capacity
-    ///
-    /// Ideally, capacity should be chosen to fit 2 serialized messages, ie. choose it to be
-    /// `2*average_msg_size`. Buffer grows if it's too small to send/receive a single message unless
-    /// it exceeds [message size limit].
-    ///
-    /// [message size limit]: Self::set_message_size_limit
-    ///
-    /// Calling this method affects only subsequently accepted connections.
-    ///
-    /// Default value is 4096 bytes.
-    pub fn set_buffer_capacity(&mut self, capacity: usize) {
-        self.buffer_capacity = capacity
-    }
+        // At this point we know that we received a message which we need to parse
 
-    /// Limits length of serialized messages being sent or received
-    ///
-    /// Sending / receiving larger messages results into error and causes channel to be closed.
-    ///
-    /// Calling this method affects only subsequently accepted connections.
-    ///
-    /// Default value is 10KB (10 000 bytes).
-    pub fn set_message_size_limit(&mut self, limit: usize) {
-        self.msg_len_limit = limit;
-    }
+        let msg_len = usize::from(u16::from_be_bytes(
+            <[u8; 2]>::try_from(&me.frame[0..2]).expect("we took exactly two first bytes"),
+        ));
+        let msg = &me.frame[2..];
+        let msg = &msg[..msg_len];
 
-    pub async fn connect<M, A>(
-        self,
-        domain: webpki::DNSNameRef<'_>,
-        addr: A,
-        config: ClientTlsConfig,
-    ) -> io::Result<TwoPartyClientTls<M>>
-    where
-        A: net::ToSocketAddrs,
-        M: Serialize + DeserializeOwned + Clone,
-    {
-        let conn = net::TcpStream::connect(addr).await?;
-        self.connected(domain, conn, &TlsConnector::from(Arc::new(config.config)))
-            .await
-    }
+        let msg = match bincode::deserialize::<M>(msg) {
+            Ok(m) => m,
+            Err(e) => return Poll::Ready(Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)))),
+        };
 
-    pub async fn connected<M>(
-        self,
-        domain: webpki::DNSNameRef<'_>,
-        conn: net::TcpStream,
-        connector: &TlsConnector,
-    ) -> io::Result<TwoPartyClientTls<M>>
-    where
-        M: Serialize + DeserializeOwned + Clone,
-    {
-        let tls_conn = connector.connect(domain, conn).await?;
-        let (read, write) = io::split(tls_conn);
-        Ok(TwoPartyClientTls::new(
-            Side::Client,
-            read,
-            write,
-            self.buffer_capacity,
-            self.msg_len_limit,
-        ))
-    }
-}
+        // Delete parsed message from the buffer
+        me.frame.copy_within(2 + msg_len.., 0);
+        *me.bytes_received -= 2 + msg_len;
 
-pub struct ClientTlsConfig {
-    config: rustls::ClientConfig,
-}
-
-impl ClientTlsConfig {
-    /// Creates incomplete TLS client config
-    ///
-    /// To complete it, you need to specify private key, and server CA. Resulting config is fixed
-    /// to support only TLSv1.3 with ciphersuite TLS13_CHACHA20_POLY1305_SHA256.
-    pub fn new() -> Self {
-        let mut config = rustls::ClientConfig::with_ciphersuites(&[
-            &rustls::ciphersuite::TLS13_CHACHA20_POLY1305_SHA256,
-        ]);
-        config.root_store = rustls::RootCertStore::empty();
-
-        Self { config }
-    }
-
-    /// Sets client private key and a chain of certificates
-    pub fn set_private_key(
-        mut self,
-        cert_chain: Vec<rustls::Certificate>,
-        private_key: rustls::PrivateKey,
-    ) -> Result<Self, rustls::TLSError> {
-        self.config
-            .set_single_client_cert(cert_chain, private_key)?;
-        Ok(self)
-    }
-
-    /// Sets server root of trust
-    ///
-    /// Server must provide a certificate matching given CA
-    pub fn set_server_ca(mut self, der_cert: &rustls::Certificate) -> Result<Self, webpki::Error> {
-        let mut store = rustls::RootCertStore::empty();
-        store.add(der_cert)?;
-        self.config.root_store = store;
-        Ok(self)
+        return Poll::Ready(Some(Ok(Incoming {
+            sender: *me.counterparty_id,
+            msg,
+        })));
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use futures::TryStreamExt;
+    use std::fmt::Debug;
+    use std::ops::RangeInclusive;
+
+    use futures::{TryStream, TryStreamExt};
+    use tokio::io;
+
+    use rand::{random, Rng, RngCore, SeedableRng};
+    use rand_chacha::ChaCha20Rng;
     use serde::{Deserialize, Serialize};
 
-    use crate::{DeliverOutgoingExt, Delivery, Incoming, Outgoing};
+    use crate::delivery::{DeliverOutgoing, DeliverOutgoingExt, Delivery, Incoming, Outgoing};
 
-    use super::*;
+    use super::{Side, TwoParty};
 
-    #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-    pub struct TestMessage(String);
-
-    /// This is a demonstrative test that shows how we can simply deploy a TCP server/client that can
-    /// exchange messages
     #[tokio::test]
-    async fn exchange_tls_server_client_messages() {
-        let certs = generate_test_certificates();
+    async fn test_two_party_in_different_settings() {
+        // Link size and buffer size are near to msg len. Messages will be transmitted one by one
+        test_duplex_link(115, 115, 115, 100..=100, 10).await;
+        // Link size is near to msg len, but buffer size is too small to fit a whole message, so
+        // messages will be transmitted part by part
+        test_duplex_link(115, 115, 50, 100..=100, 10).await;
+        // Link size is twice larger than message size, but buffer size fits only one and half messages
+        test_duplex_link(115, 250, 150, 100..=100, 10).await;
+        // Buffer fits many messages, but link capable to carry only two and half messages
+        test_duplex_link(115, 390, 4000, 100..=100, 10).await;
+        // Link size is too small to fit one message, so it grows
+        test_duplex_link(115, 50, 115, 100..=100, 10).await;
+        // Just send random chunks of bytes
+        test_duplex_link(1015, 4096, 4096, 100..=1000, 10).await;
+    }
 
-        let server_tls_config = ServerTlsConfig::new()
-            .set_clients_ca(&certs.client_ca)
-            .unwrap()
-            .set_private_key(certs.server_cert_chain, certs.server_private_key)
-            .unwrap();
-        let clients_tls_config = ClientTlsConfig::new()
-            .set_server_ca(&certs.server_ca)
-            .unwrap()
-            .set_private_key(certs.client_cert_chain, certs.client_private_key)
-            .unwrap();
+    async fn test_duplex_link(
+        msg_len_limit: usize,
+        link_capacity: usize,
+        buffer_size: usize,
+        msg_len: RangeInclusive<usize>,
+        msgs_n: usize,
+    ) {
+        let (server, client) = io::duplex(buffer_size);
+        let (server_read, server_write) = io::split(server);
+        let (client_read, client_write) = io::split(client);
 
-        let mut server = TlsServer::<TestMessage>::bind("127.0.0.1:0", server_tls_config)
-            .await
-            .unwrap();
-        let server_addr = server.local_addr().unwrap();
+        let server_link = TwoParty::new(
+            Side::Server,
+            server_read,
+            server_write,
+            link_capacity,
+            msg_len_limit,
+        );
+        let client_link = TwoParty::new(
+            Side::Client,
+            client_read,
+            client_write,
+            link_capacity,
+            msg_len_limit,
+        );
+
+        test_two_party_link(server_link, client_link, msg_len, msgs_n).await
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+    pub struct Bytes(Vec<u8>);
+
+    // This function pushes through the links chunks of bytes, and asserts that on the other end
+    // party receives correct messages
+    async fn test_two_party_link<S, C, R>(server: S, client: C, msg_len_range_: R, msgs_n: usize)
+    where
+        C: Delivery<Bytes> + Send + 'static,
+        S: Delivery<Bytes> + Send + 'static,
+        R: rand::distributions::uniform::SampleRange<usize> + Clone + Send + 'static,
+        S::Send: Unpin,
+        <S::Send as DeliverOutgoing<Bytes>>::Prepared: Unpin + Send,
+        <S::Send as DeliverOutgoing<Bytes>>::Error: Debug,
+        <S::Receive as TryStream>::Error: Debug,
+        C::Send: Unpin,
+        <C::Send as DeliverOutgoing<Bytes>>::Prepared: Unpin + Send,
+        <C::Send as DeliverOutgoing<Bytes>>::Error: Debug,
+        <C::Receive as TryStream>::Error: Debug,
+    {
+        // Make randomness deterministic and reproducible
+        let server_seed: [u8; 32] = random();
+        let client_seed: [u8; 32] = random();
+        println!("Server seed: {:?}", server_seed);
+        println!("Client seed: {:?}", client_seed);
+
+        let server_rng = ChaCha20Rng::from_seed(server_seed);
+        let client_rng = ChaCha20Rng::from_seed(client_seed);
 
         // The server
+        let local_rng = server_rng.clone();
+        let remote_rng = client_rng.clone();
+        let msg_len_range = msg_len_range_.clone();
         let server = tokio::spawn(async move {
-            let (link, _addr) = server.accept().await.unwrap();
-            let (recv, mut send) = link.split();
+            let (recv, send) = server.split();
 
-            // Server sends some messages to the client
-            let sending = tokio::spawn(async move {
-                let msgs = vec![
-                    "Hi, client!".to_string(),
-                    "Wanna see some ads?".to_string(),
-                    "Bye".to_string(),
-                ];
-                send.send_all(msgs.iter().map(|msg| Outgoing {
-                    recipient: Some(1),
-                    msg,
-                }))
-                .await
-                .unwrap();
-                // Shutdown the channel
-                DeliverOutgoingExt::<TestMessage>::shutdown(&mut send)
-                    .await
-                    .unwrap();
-            });
+            // Server sends chunks of random bytes to the client
+            let sending = tokio::spawn(push_chunks_of_random_bytes_through_link(
+                local_rng,
+                send,
+                msg_len_range.clone(),
+                msgs_n,
+                0,
+                1,
+            ));
 
-            // Server receives messages from the client and asserts that they are what we
-            // expected to receive
-            let receiving = tokio::spawn(async move {
-                let msgs = recv.try_collect::<Vec<_>>().await.unwrap();
-                let expected_msgs = vec![
-                    Incoming {
-                        sender: 1,
-                        msg: TestMessage("Hi, server!".to_string()),
-                    },
-                    Incoming {
-                        sender: 1,
-                        msg: TestMessage("No thanks".to_string()),
-                    },
-                    Incoming {
-                        sender: 1,
-                        msg: TestMessage("Bye".to_string()),
-                    },
-                ];
-                assert_eq!(msgs, expected_msgs);
-            });
+            // Server receives chunks of random bytes from the client and asserts that they are
+            // what we expected to receive
+            let receiving = tokio::spawn(receive_chunks_of_random_bytes_and_compare(
+                remote_rng,
+                recv,
+                msg_len_range,
+                msgs_n,
+                0,
+                1,
+            ));
 
             sending.await.unwrap();
             receiving.await.unwrap();
         });
 
         // The client
+        let local_rng = client_rng.clone();
+        let remote_rng = server_rng.clone();
+        let msg_len_range = msg_len_range_.clone();
         let client = tokio::spawn(async move {
-            let link = ClientBuilder::new()
-                .connect::<TestMessage, _>(
-                    webpki::DNSNameRef::try_from_ascii(b"my-server.local").unwrap(),
-                    server_addr,
-                    clients_tls_config,
-                )
-                .await
-                .unwrap();
-            let (recv, mut send) = link.split();
+            let (recv, send) = client.split();
 
-            // Client sends some messages to the server
-            let sending = tokio::spawn(async move {
-                let msgs = vec![
-                    "Hi, server!".to_string(),
-                    "No thanks".to_string(),
-                    "Bye".to_string(),
-                ];
-                send.send_all(msgs.iter().map(|msg| Outgoing {
-                    recipient: Some(0),
-                    msg,
-                }))
-                .await
-                .unwrap();
-                // Shutdown the channel
-                DeliverOutgoingExt::<TestMessage>::shutdown(&mut send)
-                    .await
-                    .unwrap();
-            });
+            // Client sends chunks of random bytes to the server
+            let sending = tokio::spawn(push_chunks_of_random_bytes_through_link(
+                local_rng,
+                send,
+                msg_len_range.clone(),
+                msgs_n,
+                1,
+                0,
+            ));
 
-            // Client receives messages from the server and asserts that they are what we
-            // expected to receive
-            let receiving = tokio::spawn(async move {
-                let msgs = recv.try_collect::<Vec<_>>().await.unwrap();
-                let expected_msgs = vec![
-                    Incoming {
-                        sender: 0,
-                        msg: TestMessage("Hi, client!".to_string()),
-                    },
-                    Incoming {
-                        sender: 0,
-                        msg: TestMessage("Wanna see some ads?".to_string()),
-                    },
-                    Incoming {
-                        sender: 0,
-                        msg: TestMessage("Bye".to_string()),
-                    },
-                ];
-                assert_eq!(msgs, expected_msgs);
-            });
+            // Client receives chunks of random bytes from the server and asserts that they are
+            // what we expected to receive
+            let receiving = tokio::spawn(receive_chunks_of_random_bytes_and_compare(
+                remote_rng,
+                recv,
+                msg_len_range,
+                msgs_n,
+                1,
+                0,
+            ));
 
             sending.await.unwrap();
             receiving.await.unwrap();
         });
 
-        client.await.unwrap();
         server.await.unwrap();
+        client.await.unwrap();
     }
 
-    struct Certificates {
-        // public
-        server_ca: rustls::Certificate,
-        client_ca: rustls::Certificate,
-        // server
-        server_cert_chain: Vec<rustls::Certificate>,
-        server_private_key: rustls::PrivateKey,
-        // client
-        client_cert_chain: Vec<rustls::Certificate>,
-        client_private_key: rustls::PrivateKey,
-    }
-
-    fn generate_test_certificates() -> Certificates {
-        let mut server_ca_params = rcgen::CertificateParams::default();
-        server_ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        server_ca_params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
-        let server_ca = rcgen::Certificate::from_params(server_ca_params).unwrap();
-
-        let mut client_ca_params = rcgen::CertificateParams::default();
-        client_ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        client_ca_params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
-        let clients_ca = rcgen::Certificate::from_params(client_ca_params).unwrap();
-
-        let mut server_params = rcgen::CertificateParams::new(vec!["my-server.local".to_string()]);
-        server_params.key_usages = vec![
-            rcgen::KeyUsagePurpose::DigitalSignature,
-            rcgen::KeyUsagePurpose::KeyAgreement,
-        ];
-        server_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-        let server = rcgen::Certificate::from_params(server_params).unwrap();
-
-        let mut client_params = rcgen::CertificateParams::new(vec!["party0.local".to_string()]);
-        client_params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
-        client_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
-        let client = rcgen::Certificate::from_params(client_params).unwrap();
-
-        Certificates {
-            server_ca: server_ca.serialize_der().map(rustls::Certificate).unwrap(),
-            client_ca: clients_ca.serialize_der().map(rustls::Certificate).unwrap(),
-            server_cert_chain: vec![server
-                .serialize_der_with_signer(&server_ca)
-                .map(rustls::Certificate)
-                .unwrap()],
-            server_private_key: rustls::PrivateKey(server.serialize_private_key_der()),
-            client_cert_chain: vec![client
-                .serialize_der_with_signer(&clients_ca)
-                .map(rustls::Certificate)
-                .unwrap()],
-            client_private_key: rustls::PrivateKey(client.serialize_private_key_der()),
+    async fn push_chunks_of_random_bytes_through_link<R, Link, Range>(
+        mut rng: R,
+        mut link: Link,
+        msg_len_range: Range,
+        chunks_n: usize,
+        party_i: u16,
+        counterparty_id: u16,
+    ) where
+        R: RngCore,
+        Link: DeliverOutgoing<Bytes> + Unpin,
+        Link::Prepared: Unpin,
+        Link::Error: Debug,
+        Range: rand::distributions::uniform::SampleRange<usize> + Clone,
+    {
+        for i in 1..=chunks_n {
+            let msg_len = rng.gen_range(msg_len_range.clone());
+            let mut msg = vec![0u8; msg_len];
+            rng.fill_bytes(&mut msg);
+            link.send(Outgoing {
+                recipient: Some(counterparty_id),
+                msg: &Bytes(msg),
+            })
+            .await
+            .unwrap();
+            println!("Party {} sends chunk {}", party_i, i);
         }
+        link.shutdown().await.unwrap();
     }
 
-    #[test]
-    fn self_signed_certificates_are_valid() {
-        use rustls::ServerCertVerifier;
+    async fn receive_chunks_of_random_bytes_and_compare<R, Link, Range>(
+        mut rng: R,
+        mut link: Link,
+        msg_len_range: Range,
+        chunks_n: usize,
+        party_id: u16,
+        counterparty_id: u16,
+    ) where
+        R: RngCore,
+        Link: TryStream<Ok = Incoming<Bytes>> + Unpin,
+        Link::Error: Debug,
+        Range: rand::distributions::uniform::SampleRange<usize> + Clone,
+    {
+        for i in 1..=chunks_n {
+            let msg = link.try_next().await.unwrap();
 
-        let certs = generate_test_certificates();
-
-        let server_cert_verifier = rustls::WebPKIVerifier::new();
-        let mut server_roots = rustls::RootCertStore::empty();
-        server_roots.add(&certs.server_ca).unwrap();
-
-        server_cert_verifier
-            .verify_server_cert(
-                &server_roots,
-                &certs.server_cert_chain,
-                webpki::DNSNameRef::try_from_ascii(b"my-server.local").unwrap(),
-                &[],
-            )
-            .unwrap();
-
-        let mut client_roots = rustls::RootCertStore::empty();
-        client_roots.add(&certs.client_ca).unwrap();
-        let client_cert_verifier = rustls::AllowAnyAuthenticatedClient::new(client_roots);
-        client_cert_verifier
-            .verify_client_cert(&certs.client_cert_chain, None)
-            .unwrap();
+            let expected_msg_len = rng.gen_range(msg_len_range.clone());
+            let mut expected_msg = vec![0; expected_msg_len];
+            rng.fill_bytes(&mut expected_msg);
+            assert_eq!(
+                msg,
+                Some(Incoming {
+                    sender: counterparty_id,
+                    msg: Bytes(expected_msg)
+                })
+            );
+            println!("Party {} receives valid chunk {}", party_id, i);
+        }
+        assert!(link.try_next().await.unwrap().is_none());
     }
 }
