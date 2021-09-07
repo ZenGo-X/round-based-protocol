@@ -18,7 +18,12 @@ pub fn protocol_message(input: proc_macro::TokenStream) -> proc_macro::TokenStre
 
     let name = input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-    let variant_id_method = variant_id(&name, enum_data.variants.iter());
+    let variant_id_method = if !enum_data.variants.is_empty() {
+        variant_id(&name, enum_data.variants.iter())
+    } else {
+        // Special case for empty enum. Empty protocol message is useless, but let it be
+        quote! { match *self {} }
+    };
 
     let impl_protocol_message = quote! {
         impl #impl_generics round_based::rounds::ProtocolMessage for #name #ty_generics #where_clause {

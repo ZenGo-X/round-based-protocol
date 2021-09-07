@@ -98,16 +98,6 @@ pub struct SimulationOutgoing<M> {
     sender: broadcast::Sender<Outgoing<Incoming<M>>>,
 }
 
-// impl<M> BroadcastOutgoing<M> {
-//     pub fn new(sender: broadcast::Sender<M>) -> Self {
-//         Self { sender }
-//     }
-//
-//     pub fn into_inner(self) -> broadcast::Sender<M> {
-//         self.sender
-//     }
-// }
-
 impl<M> DeliverOutgoing<M> for SimulationOutgoing<M>
 where
     M: Clone + Unpin,

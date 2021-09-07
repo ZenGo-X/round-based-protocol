@@ -25,9 +25,9 @@ async-stream = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 round-based-derive = { path = "../round-based-derive", optional = true }
 
-rustls = { version = "0.19", features = ["dangerous_configuration"] }
-webpki = "0.21"
-tokio-rustls = "0.22"
+rustls = { version = "0.19", features = ["dangerous_configuration"], optional = true }
+webpki = { version = "0.21", optional = true }
+tokio-rustls = { version = "0.22", optional = true }
 
 [dev-dependencies]
 rand = "0.8"
@@ -40,6 +40,7 @@ rcgen = "0.8"
 [features]
 default = []
 derive = ["round-based-derive"]
+tls = ["rustls", "webpki", "tokio-rustls"]
 
 [[example]]
 name = "mpc_random_generation"

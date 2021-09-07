@@ -1,3 +1,66 @@
+//! Two party delivery over TLS+TCP socket
+//!
+//! ## Example: Server
+//! ```rust,no_run
+//! use round_based::delivery::two_party::tls::{TlsServer, ServerTlsConfig};
+//! use round_based::MpcParty;
+//! # use serde::{Serialize, Deserialize};
+//! # async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+//! # #[derive(Serialize, Deserialize, Clone, round_based::ProtocolMessage)] enum Msg {}
+//! # async fn protocol_of_random_generation<R: rand::RngCore, M: round_based::Mpc<ProtocolMessage = Msg>>(party: M,i: u16,n: u16,mut rng: R) -> Result<[u8; 32], Box<dyn std::error::Error>> { todo!() }
+//! # let (client_ca, cert, private_key) = unimplemented!();
+//!
+//! let config = ServerTlsConfig::new()
+//!     .set_clients_ca(&client_ca)?
+//!     .set_private_key(cert, private_key)?;
+//!
+//! let mut server = TlsServer::<Msg>::bind("127.0.0.1:9090", config).await?;
+//! loop {
+//!     let (client, _client_addr) = server.accept().await?;
+//!     let party = MpcParty::connect(client);
+//!
+//!     // ... run mpc here, e.g.:
+//!     let randomness = protocol_of_random_generation(party, 0, 2, rand::rngs::OsRng).await?;
+//!     println!("Randomness: {}", hex::encode(randomness));
+//! }
+//! #
+//! # Ok(()) }
+//! ```
+//!
+//! ## Example: Client
+//! ```rust,no_run
+//! use round_based::delivery::two_party::tls::{TlsClientBuilder, ClientTlsConfig};
+//! use round_based::MpcParty;
+//! # use serde::{Serialize, Deserialize};
+//! # async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+//! # #[derive(Serialize, Deserialize, Clone, round_based::ProtocolMessage)] enum Msg {}
+//! # async fn protocol_of_random_generation<R: rand::RngCore, M: round_based::Mpc<ProtocolMessage = Msg>>(party: M,i: u16,n: u16,mut rng: R) -> Result<[u8; 32], Box<dyn std::error::Error>> { todo!() }
+//! # let (server_ca, cert, private_key) = unimplemented!();
+//!
+//! let config = ClientTlsConfig::new()
+//!     .set_server_ca(&server_ca)?
+//!     .set_private_key(cert, private_key)?;
+//!
+//! let conn = TlsClientBuilder::new()
+//!     .connect::<Msg, _>(
+//!         webpki::DNSNameRef::try_from_ascii(b"example.com")?,
+//!         "example.com",
+//!         config,
+//!     )
+//!     .await?;
+//! let party = MpcParty::connect(conn);
+//!
+//! // ... run mpc here, e.g.:
+//! let randomness = protocol_of_random_generation(party, 1, 2, rand::rngs::OsRng).await?;
+//! println!("Randomness: {}", hex::encode(randomness));
+//! #
+//! # Ok(()) }
+//! ```
+//!
+//! _Note:_ `protocol_of_random_generation` is defined in [examples/mpc_random_generation.rs]
+//!
+//! [examples/mpc_random_generation.rs]: https://github.com/ZenGo-X/round-based-protocol/blob/main/round-based/examples/mpc_random_generation.rs
+
 use std::net::SocketAddr;
 use std::ops;
 use std::sync::Arc;
@@ -12,17 +75,25 @@ use serde::Serialize;
 
 use super::{Side, TwoParty};
 
+/// Server connection established with client over TLS+TCP
 pub type TwoPartyServerTls<M> = TwoParty<
     M,
     io::ReadHalf<tokio_rustls::server::TlsStream<net::TcpStream>>,
     io::WriteHalf<tokio_rustls::server::TlsStream<net::TcpStream>>,
 >;
+/// Client connection established with server over TLS+TCP
 pub type TwoPartyClientTls<M> = TwoParty<
     M,
     io::ReadHalf<tokio_rustls::client::TlsStream<net::TcpStream>>,
     io::WriteHalf<tokio_rustls::client::TlsStream<net::TcpStream>>,
 >;
 
+/// A party of two party protocol who runs a TLS server
+///
+/// Wraps a tokio [TcpListener](net::TcpListener) and [TlsAcceptor]. Provides [`accept`](Self::accept)
+/// method that returns [TwoPartyServerTls] implementing [Delivery] for every new connection
+///
+/// [Delivery]: crate::Delivery
 pub struct TlsServer<M> {
     listener: net::TcpListener,
     acceptor: TlsAcceptor,
@@ -48,7 +119,7 @@ where
     ///
     /// If you need to provide custom [rustls::ServerConfig], use [with_acceptor] constructor.
     ///
-    /// [with_rustls_config]: Self::with_rustls_config
+    /// [with_acceptor]: Self::with_acceptor
     pub fn new(listener: net::TcpListener, config: ServerTlsConfig) -> Self {
         Self::with_acceptor(listener, Arc::new(config.config).into())
     }
@@ -92,6 +163,10 @@ where
         self.msg_len_limit = limit;
     }
 
+    /// Accepts a new client, performs TLS handshake, and then returns a [TwoPartyServerTls] implementing
+    /// [Delivery] trait
+    ///
+    /// [Delivery]: crate::Delivery
     pub async fn accept(&mut self) -> io::Result<(TwoPartyServerTls<M>, SocketAddr)> {
         let (conn, addr) = self.listener.accept().await?;
         let tls_conn = self.acceptor.accept(conn).await?;
@@ -115,6 +190,7 @@ impl<M> ops::Deref for TlsServer<M> {
     }
 }
 
+/// Server TLS config
 #[derive(Clone)]
 pub struct ServerTlsConfig {
     config: rustls::ServerConfig,
@@ -164,12 +240,13 @@ impl ServerTlsConfig {
     }
 }
 
-pub struct ClientBuilder {
+/// Builds a party of two party protocol who acts as TLS client
+pub struct TlsClientBuilder {
     buffer_capacity: usize,
     msg_len_limit: usize,
 }
 
-impl ClientBuilder {
+impl TlsClientBuilder {
     /// Constructs a client builder
     pub fn new() -> Self {
         Self {
@@ -204,6 +281,10 @@ impl ClientBuilder {
         self.msg_len_limit = limit;
     }
 
+    /// Opens a TCP connection to a remote host, performs TLS handshake and establishes secure
+    /// communication channel
+    ///
+    /// If you need more precise control on socket creation, use [connected](Self::connected) constructor.
     pub async fn connect<M, A>(
         self,
         domain: webpki::DNSNameRef<'_>,
@@ -215,20 +296,20 @@ impl ClientBuilder {
         M: Serialize + DeserializeOwned + Clone,
     {
         let conn = net::TcpStream::connect(addr).await?;
-        self.connected(domain, conn, &TlsConnector::from(Arc::new(config.config)))
-            .await
+        let tls_conn = TlsConnector::from(Arc::new(config.config))
+            .connect(domain, conn)
+            .await?;
+        self.connected(tls_conn)
     }
 
-    pub async fn connected<M>(
+    /// Constructs TwoPartyClientTls from TlsStream
+    pub fn connected<M>(
         self,
-        domain: webpki::DNSNameRef<'_>,
-        conn: net::TcpStream,
-        connector: &TlsConnector,
+        tls_conn: tokio_rustls::client::TlsStream<net::TcpStream>,
     ) -> io::Result<TwoPartyClientTls<M>>
     where
         M: Serialize + DeserializeOwned + Clone,
     {
-        let tls_conn = connector.connect(domain, conn).await?;
         let (read, write) = io::split(tls_conn);
         Ok(TwoPartyClientTls::new(
             Side::Client,
@@ -240,6 +321,7 @@ impl ClientBuilder {
     }
 }
 
+/// Client TLS config
 pub struct ClientTlsConfig {
     config: rustls::ClientConfig,
 }
@@ -365,7 +447,7 @@ mod tests {
 
         // The client
         let client = tokio::spawn(async move {
-            let link = ClientBuilder::new()
+            let link = TlsClientBuilder::new()
                 .connect::<TestMessage, _>(
                     webpki::DNSNameRef::try_from_ascii(b"my-server.local").unwrap(),
                     server_addr,

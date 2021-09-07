@@ -1,3 +1,52 @@
+//! Two party delivery over plain TCP socket
+//!
+//! __*Warning:*__ it does not encrypt/authenticate messages, anything you send on the wire can be
+//! easily forged. Use it for development purposes only. See [tls](super::tls) delivery if you need
+//! a secure communication channel.
+//!
+//! ## Example: Server
+//! ```rust,no_run
+//! use round_based::delivery::two_party::insecure::Server;
+//! use round_based::MpcParty;
+//! # use serde::{Serialize, Deserialize};
+//! # async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+//! # #[derive(Serialize, Deserialize, Clone, round_based::ProtocolMessage)] enum Msg {}
+//! # async fn protocol_of_random_generation<R: rand::RngCore, M: round_based::Mpc<ProtocolMessage = Msg>>(party: M,i: u16,n: u16,mut rng: R) -> Result<[u8; 32], Box<dyn std::error::Error>> { todo!() }
+//!
+//! let mut server = Server::<Msg>::bind("127.0.0.1:9090").await?;
+//! loop {
+//!     let (client, _client_addr) = server.accept().await?;
+//!     let party = MpcParty::connect(client);
+//!     // ... run mpc here, e.g.:
+//!     let randomness = protocol_of_random_generation(party, 0, 2, rand::rngs::OsRng).await?;
+//!     println!("Randomness: {}", hex::encode(randomness));
+//! }
+//! #
+//! # Ok(()) }
+//! ```
+//!
+//! ## Example: Client
+//! ```rust,no_run
+//! use round_based::delivery::two_party::insecure::ClientBuilder;
+//! use round_based::MpcParty;
+//! # use serde::{Serialize, Deserialize};
+//! # async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+//! # #[derive(Serialize, Deserialize, Clone, round_based::ProtocolMessage)] enum Msg {}
+//! # async fn protocol_of_random_generation<R: rand::RngCore, M: round_based::Mpc<ProtocolMessage = Msg>>(party: M,i: u16,n: u16,mut rng: R) -> Result<[u8; 32], Box<dyn std::error::Error>> { todo!() }
+//!
+//! let conn = ClientBuilder::new().connect::<Msg, _>("127.0.0.1:9090").await?;
+//! let party = MpcParty::connect(conn);
+//! // ... run mpc here, e.g.:
+//! let randomness = protocol_of_random_generation(party, 1, 2, rand::rngs::OsRng).await?;
+//! println!("Randomness: {}", hex::encode(randomness));
+//! #
+//! # Ok(()) }
+//! ```
+//!
+//! _Note:_ `protocol_of_random_generation` is defined in [examples/mpc_random_generation.rs]
+//!
+//! [examples/mpc_random_generation.rs]: https://github.com/ZenGo-X/round-based-protocol/blob/main/round-based/examples/mpc_random_generation.rs
+
 use std::net::SocketAddr;
 use std::ops;
 
@@ -14,15 +63,15 @@ use serde::Serialize;
 
 use super::{Side, TwoParty};
 
+/// A connection established between two parties over plain TCP
 pub type TwoPartyTcp<M> = TwoParty<M, OwnedReadHalf, OwnedWriteHalf>;
 
-/// A party of twoparty protocol who runs a TCP server
+/// A party of two party protocol who runs a TCP server
 ///
-/// A wrapper around tokio [TcpListener](net::TcpListener) with overloaded [`accept`](Self::accept)
+/// Server is a wrapper around tokio [TcpListener](net::TcpListener) with overloaded [`accept`](Self::accept)
 /// method that returns [TwoPartyTcp] implementing [Delivery] trait.
 ///
-/// If you need twoparty delivery for different transport (eg. QUIC), you'll have to construct
-/// [TwoParty] structure manually.
+/// [Delivery]: crate::Delivery
 pub struct Server<M> {
     listener: net::TcpListener,
     buffer_capacity: usize,
@@ -81,6 +130,8 @@ where
     /// Accepts a new incoming connection
     ///
     /// Returns a [TwoPartyTcp] that implements [Delivery] trait, and address of the client.
+    ///
+    /// [Delivery]: crate::Delivery
     pub async fn accept(&mut self) -> io::Result<(TwoPartyTcp<M>, SocketAddr)> {
         let (conn, remote_addr) = self.listener.accept().await?;
         let (recv, send) = conn.into_split();
@@ -109,6 +160,7 @@ impl<M> ops::DerefMut for Server<M> {
     }
 }
 
+/// Builds a party of two party protocol who acts as TCP client
 pub struct ClientBuilder {
     buffer_capacity: usize,
     msg_len_limit: usize,
@@ -181,13 +233,9 @@ impl ClientBuilder {
 #[cfg(test)]
 mod tests {
     use std::fmt::Debug;
-    
 
-    
+    use futures::TryStreamExt;
 
-    use futures::{TryStreamExt};
-    
-    
     use serde::{Deserialize, Serialize};
 
     use crate::delivery::{DeliverOutgoingExt, Delivery, Incoming, Outgoing};

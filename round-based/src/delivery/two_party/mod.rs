@@ -1,3 +1,12 @@
+//! Delivery traits implementation for two party protocols
+//!
+//! Two party delivery can be natively implemented as a server/client communication.
+//!
+//! This module contains [TwoParty] primitive that can be used to build a two party delivery on top
+//! of any network protocol (TCP, TCP+TLS, QUIC, etc.). There are ready-to-use implementations on
+//! top of most popular network protocols: TCP+TLS (see [tls module](tls)), and plain TCP (for
+//! development purposes, see [insecure module](insecure))
+
 use std::convert::{TryFrom, TryInto};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -12,12 +21,43 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::{DeliverOutgoing, Delivery, Incoming, Outgoing};
 
 pub mod insecure;
+#[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
 pub mod tls;
 
-pub const SERVER_ID: u16 = 0;
-pub const CLIENT_ID: u16 = 1;
+/// Index of party who runs a server
+pub const SERVER_IDX: u16 = 0;
+/// Index of party who connects to the server
+pub const CLIENT_IDX: u16 = 1;
 
-/// A delivery link established between two parties that can be used to exchange messages `M`
+/// A connection established between two parties that can be used to exchange messages `M`
+///
+/// ## Example: TCP client
+/// In this example we have a client connecting to TCP server. Once connection is established, TwoParty
+/// can be constructed:
+/// ```rust,no_run
+/// use tokio::net::TcpStream;
+/// use round_based::delivery::two_party::{TwoParty, Side};
+/// use serde::{Serialize, Deserialize};
+///
+/// #[derive(Serialize, Deserialize, Clone)]
+/// pub enum Msg {
+///     Ping(u16),
+///     Pong(u16),
+/// }
+///
+/// # async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
+/// #
+/// let conn = TcpStream::connect("10.0.0.1:9090").await?;
+/// let (read, write) = conn.into_split();
+///
+/// let delivery = TwoParty::<Msg, _, _>::new(Side::Client, read, write, 4096, 10_000);
+/// # let _ = delivery;
+/// #
+/// # Ok(()) }
+/// ```
+///
+/// _Note:_ if you indeed need to construct TwoParty over plain TCP, we've got it for you: see [insecure module](insecure)
 pub struct TwoParty<M, R, W> {
     recv: RecvLink<M, R>,
     send: SendLink<W>,
@@ -48,8 +88,8 @@ where
         message_size_limit: usize,
     ) -> Self {
         let counterparty_id = match side {
-            Side::Server => CLIENT_ID,
-            Side::Client => SERVER_ID,
+            Side::Server => CLIENT_IDX,
+            Side::Client => SERVER_IDX,
         };
         Self {
             recv: RecvLink::new(read_link, capacity, message_size_limit, counterparty_id),
@@ -73,6 +113,7 @@ where
     }
 }
 
+/// Determines the side of TwoParty channel: server/client
 pub enum Side {
     Server,
     Client,
@@ -119,7 +160,7 @@ where
     M: Serialize + Clone + Unpin,
     S: AsyncWrite,
 {
-    type Prepared = PreparedSend<M>;
+    type Prepared = PreparedMsg<M>;
     type Error = io::Error;
 
     fn prepare(self: Pin<&Self>, msg: Outgoing<&M>) -> io::Result<Self::Prepared> {
@@ -142,7 +183,7 @@ where
                 "message is too large to fit into the intermediate buffer",
             ));
         }
-        Ok(PreparedSend {
+        Ok(PreparedMsg {
             serialized_size,
             msg: msg.msg.clone(),
         })
@@ -224,7 +265,8 @@ where
     }
 }
 
-pub struct PreparedSend<M> {
+/// Message sending over [SendLink]
+pub struct PreparedMsg<M> {
     msg: M,
     serialized_size: u16,
 }
