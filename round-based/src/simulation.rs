@@ -49,6 +49,15 @@ where
     }
 }
 
+impl<M> Default for Simulation<M>
+where
+    M: ProtocolMessage + Clone + Send + Unpin + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct SimulationDelivery<M> {
     incoming: SimulationIncoming<M>,
     outgoing: SimulationOutgoing<M>,

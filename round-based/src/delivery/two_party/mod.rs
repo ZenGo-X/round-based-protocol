@@ -358,7 +358,7 @@ where
         let mut me = self.project();
 
         // Unless we have message to parse, we need to read more bytes
-        while !next_message_available(&me.frame, *me.bytes_received) {
+        while !next_message_available(me.frame, *me.bytes_received) {
             grow_buffer_if_needed(&mut *me.frame, *me.bytes_received, *me.msg_len_limit)?;
 
             let bytes_received = *me.bytes_received;
@@ -402,10 +402,10 @@ where
         me.frame.copy_within(2 + msg_len.., 0);
         *me.bytes_received -= 2 + msg_len;
 
-        return Poll::Ready(Some(Ok(Incoming {
+        Poll::Ready(Some(Ok(Incoming {
             sender: *me.counterparty_id,
             msg,
-        })));
+        })))
     }
 }
 

@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
@@ -46,7 +48,7 @@ where
 
     async fn channel_broken(&mut self, error: E) {
         let mut error = Some(error);
-        for (_, round) in &mut self.rounds {
+        for round in self.rounds.values_mut() {
             if round.flag.is_awaiting() {
                 let _ = round.events.send(RoundEvent::Error(error.take())).await;
             } else {
@@ -56,7 +58,7 @@ where
     }
 
     async fn channel_closed(&mut self) {
-        for (_, round) in &mut self.rounds {
+        for round in self.rounds.values_mut() {
             let _ = round.events.send(RoundEvent::Eof).await;
         }
     }
@@ -69,7 +71,7 @@ where
                 return;
             }
         };
-        if let Err(_) = round.events.send(RoundEvent::Msg(msg)).await {
+        if let Err(_err) = round.events.send(RoundEvent::Msg(msg)).await {
             // todo: log that round is dropped
         }
     }
@@ -141,7 +143,7 @@ where
         S: SupersedingStore<Q>,
     {
         let (request, response) = oneshot::channel();
-        if let Err(_) = prior_round.req.send(request) {
+        if prior_round.req.send(request).is_err() {
             // Task is gone. Probably it just finished.
             return Err(SupersedeError::PreviousStoreGone(store));
         }
@@ -687,12 +689,7 @@ mod tests {
                     received_msgs: self.0,
                 })
             } else {
-                Ok(self
-                    .0
-                    .into_iter()
-                    .map(|entry| entry)
-                    .collect::<Option<Vec<_>>>()
-                    .unwrap())
+                Ok(self.0.into_iter().collect::<Option<Vec<_>>>().unwrap())
             }
         }
     }
@@ -937,7 +934,7 @@ mod tests {
         fn finish(self) -> Result<Self::Output, Self::Error> {
             if self.wants_more() {
                 Err(TestStoreError::Finish {
-                    received_msgs: self.received.clone(),
+                    received_msgs: self.received,
                 })
             } else {
                 Ok(self.received.into_iter().flatten().collect())
