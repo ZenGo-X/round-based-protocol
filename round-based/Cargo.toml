@@ -35,6 +35,9 @@ sha2 = { version = "0.9", optional = true }
 secp256k1 = { version = "0.20", features = ["global-context"], optional = true }
 never = { version = "0.1", optional = true }
 
+# unstable features
+rcgen = { version = "0.8", optional = true }
+
 [dev-dependencies]
 rand = "0.8"
 rand_chacha = "0.3"
@@ -48,6 +51,7 @@ default = ["tls"]
 derive = ["round-based-derive"]
 tls = ["rustls", "webpki", "tokio-rustls"]
 trusted-delivery = ["tls", "secp256k1", "sha2", "never"]
+unstable = ["rcgen"]
 
 [[example]]
 name = "mpc_random_generation"

@@ -283,6 +283,7 @@ mod tests {
     use futures::TryStreamExt;
     use serde::{Deserialize, Serialize};
 
+    use crate::delivery::utils::tls::mock::MockTls;
     use crate::{DeliverOutgoingExt, Delivery, Incoming, Outgoing};
 
     use super::*;
@@ -294,20 +295,10 @@ mod tests {
     /// exchange messages
     #[tokio::test]
     async fn exchange_tls_server_client_messages() {
-        let certs = generate_test_certificates();
+        let mock_tls = MockTls::generate();
 
-        let server_tls_config = ServerTlsConfig::builder()
-            .set_clients_ca(&certs.client_ca)
-            .unwrap()
-            .set_private_key(certs.server_cert_chain, certs.server_private_key)
-            .unwrap()
-            .build();
-        let clients_tls_config = ClientTlsConfig::builder()
-            .set_server_ca(&certs.server_ca)
-            .unwrap()
-            .set_private_key(certs.client_cert_chain, certs.client_private_key)
-            .unwrap()
-            .build();
+        let server_tls_config = mock_tls.issue_server_cert(vec!["my-server.local".to_string()]);
+        let client_tls_config = mock_tls.issue_client_cert(vec!["party0.local".to_string()]);
 
         let mut server = TlsServer::<TestMessage>::bind("127.0.0.1:0", &server_tls_config)
             .await
@@ -369,7 +360,7 @@ mod tests {
                 .connect::<TestMessage, _>(
                     webpki::DNSNameRef::try_from_ascii(b"my-server.local").unwrap(),
                     server_addr,
-                    &clients_tls_config,
+                    &client_tls_config,
                 )
                 .await
                 .unwrap();
@@ -421,84 +412,5 @@ mod tests {
 
         client.await.unwrap();
         server.await.unwrap();
-    }
-
-    struct Certificates {
-        // public
-        server_ca: rustls::Certificate,
-        client_ca: rustls::Certificate,
-        // server
-        server_cert_chain: Vec<rustls::Certificate>,
-        server_private_key: rustls::PrivateKey,
-        // client
-        client_cert_chain: Vec<rustls::Certificate>,
-        client_private_key: rustls::PrivateKey,
-    }
-
-    fn generate_test_certificates() -> Certificates {
-        let mut server_ca_params = rcgen::CertificateParams::default();
-        server_ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        server_ca_params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
-        let server_ca = rcgen::Certificate::from_params(server_ca_params).unwrap();
-
-        let mut client_ca_params = rcgen::CertificateParams::default();
-        client_ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        client_ca_params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
-        let clients_ca = rcgen::Certificate::from_params(client_ca_params).unwrap();
-
-        let mut server_params = rcgen::CertificateParams::new(vec!["my-server.local".to_string()]);
-        server_params.key_usages = vec![
-            rcgen::KeyUsagePurpose::DigitalSignature,
-            rcgen::KeyUsagePurpose::KeyAgreement,
-        ];
-        server_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-        let server = rcgen::Certificate::from_params(server_params).unwrap();
-
-        let mut client_params = rcgen::CertificateParams::new(vec!["party0.local".to_string()]);
-        client_params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
-        client_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
-        let client = rcgen::Certificate::from_params(client_params).unwrap();
-
-        Certificates {
-            server_ca: server_ca.serialize_der().map(rustls::Certificate).unwrap(),
-            client_ca: clients_ca.serialize_der().map(rustls::Certificate).unwrap(),
-            server_cert_chain: vec![server
-                .serialize_der_with_signer(&server_ca)
-                .map(rustls::Certificate)
-                .unwrap()],
-            server_private_key: rustls::PrivateKey(server.serialize_private_key_der()),
-            client_cert_chain: vec![client
-                .serialize_der_with_signer(&clients_ca)
-                .map(rustls::Certificate)
-                .unwrap()],
-            client_private_key: rustls::PrivateKey(client.serialize_private_key_der()),
-        }
-    }
-
-    #[test]
-    fn self_signed_certificates_are_valid() {
-        use rustls::ServerCertVerifier;
-
-        let certs = generate_test_certificates();
-
-        let server_cert_verifier = rustls::WebPKIVerifier::new();
-        let mut server_roots = rustls::RootCertStore::empty();
-        server_roots.add(&certs.server_ca).unwrap();
-
-        server_cert_verifier
-            .verify_server_cert(
-                &server_roots,
-                &certs.server_cert_chain,
-                webpki::DNSNameRef::try_from_ascii(b"my-server.local").unwrap(),
-                &[],
-            )
-            .unwrap();
-
-        let mut client_roots = rustls::RootCertStore::empty();
-        client_roots.add(&certs.client_ca).unwrap();
-        let client_cert_verifier = rustls::AllowAnyAuthenticatedClient::new(client_roots);
-        client_cert_verifier
-            .verify_client_cert(&certs.client_cert_chain, None)
-            .unwrap();
     }
 }
