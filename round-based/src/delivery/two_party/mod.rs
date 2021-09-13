@@ -1,4 +1,4 @@
-//! Delivery traits implementation for two party protocols
+//! Delivery implementation for two party protocols
 //!
 //! Two party delivery can be natively implemented as a server/client communication.
 //!

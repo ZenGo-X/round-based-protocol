@@ -10,11 +10,12 @@
 //! # async fn protocol_of_random_generation<R: rand::RngCore, M: round_based::Mpc<ProtocolMessage = Msg>>(party: M,i: u16,n: u16,mut rng: R) -> Result<[u8; 32], Box<dyn std::error::Error>> { todo!() }
 //! # let (client_ca, cert, private_key) = unimplemented!();
 //!
-//! let config = ServerTlsConfig::new()
+//! let config = ServerTlsConfig::builder()
 //!     .set_clients_ca(&client_ca)?
-//!     .set_private_key(cert, private_key)?;
+//!     .set_private_key(cert, private_key)?
+//!     .build();
 //!
-//! let mut server = TlsServer::<Msg>::bind("127.0.0.1:9090", config).await?;
+//! let mut server = TlsServer::<Msg>::bind("127.0.0.1:9090", &config).await?;
 //! loop {
 //!     let (client, _client_addr) = server.accept().await?;
 //!     let party = MpcParty::connect(client);
@@ -37,15 +38,16 @@
 //! # async fn protocol_of_random_generation<R: rand::RngCore, M: round_based::Mpc<ProtocolMessage = Msg>>(party: M,i: u16,n: u16,mut rng: R) -> Result<[u8; 32], Box<dyn std::error::Error>> { todo!() }
 //! # let (server_ca, cert, private_key) = unimplemented!();
 //!
-//! let config = ClientTlsConfig::new()
+//! let config = ClientTlsConfig::builder()
 //!     .set_server_ca(&server_ca)?
-//!     .set_private_key(cert, private_key)?;
+//!     .set_private_key(cert, private_key)?
+//!     .build();
 //!
 //! let conn = TlsClientBuilder::new()
 //!     .connect::<Msg, _>(
 //!         webpki::DNSNameRef::try_from_ascii(b"example.com")?,
 //!         "example.com",
-//!         config,
+//!         &config,
 //!     )
 //!     .await?;
 //! let party = MpcParty::connect(conn);
@@ -63,7 +65,6 @@
 
 use std::net::SocketAddr;
 use std::ops;
-use std::sync::Arc;
 
 use tokio::io;
 use tokio::net;
@@ -74,6 +75,9 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use super::{Side, TwoParty};
+
+// Re-exports
+pub use crate::delivery::utils::tls::{ClientTlsConfig, ServerTlsConfig};
 
 /// Server connection established with client over TLS+TCP
 pub type TwoPartyServerTls<M> = TwoParty<
@@ -111,7 +115,10 @@ where
     /// Binds a TCP server at given address with given TLS config
     ///
     /// If you need more precise control on socket binding, use [new](Self::new) constructor.
-    pub async fn bind<A: net::ToSocketAddrs>(addr: A, config: ServerTlsConfig) -> io::Result<Self> {
+    pub async fn bind<A: net::ToSocketAddrs>(
+        addr: A,
+        config: &ServerTlsConfig,
+    ) -> io::Result<Self> {
         Ok(Self::new(net::TcpListener::bind(addr).await?, config))
     }
 
@@ -120,8 +127,8 @@ where
     /// If you need to provide custom [rustls::ServerConfig], use [with_acceptor] constructor.
     ///
     /// [with_acceptor]: Self::with_acceptor
-    pub fn new(listener: net::TcpListener, config: ServerTlsConfig) -> Self {
-        Self::with_acceptor(listener, Arc::new(config.config).into())
+    pub fn new(listener: net::TcpListener, config: &ServerTlsConfig) -> Self {
+        Self::with_acceptor(listener, TlsAcceptor::from(config.to_rustls_config()))
     }
 
     /// Wraps existing TcpListener and acceptor into TlsServer
@@ -190,56 +197,6 @@ impl<M> ops::Deref for TlsServer<M> {
     }
 }
 
-/// Server TLS config
-#[derive(Clone)]
-pub struct ServerTlsConfig {
-    config: rustls::ServerConfig,
-}
-
-impl ServerTlsConfig {
-    /// Creates incomplete TLS server config
-    ///
-    /// To complete it, you need to specify private key, and clients CA. Resulting config is fixed
-    /// to support only TLSv1.3 with ciphersuite TLS13_CHACHA20_POLY1305_SHA256.
-    pub fn new() -> Self {
-        let mut config = rustls::ServerConfig::with_ciphersuites(
-            rustls::AllowAnyAuthenticatedClient::new(rustls::RootCertStore::empty()),
-            &[&rustls::ciphersuite::TLS13_CHACHA20_POLY1305_SHA256],
-        );
-        config.versions = vec![rustls::ProtocolVersion::TLSv1_3];
-
-        Self { config }
-    }
-
-    /// Sets clients root of trust
-    ///
-    /// Enables client authentication, ie. client must provide a certificate matching given CA.
-    pub fn set_clients_ca(mut self, der_cert: &rustls::Certificate) -> Result<Self, webpki::Error> {
-        let mut store = rustls::RootCertStore::empty();
-        store.add(der_cert)?;
-        self.config
-            .set_client_certificate_verifier(rustls::AllowAnyAuthenticatedClient::new(store));
-        Ok(self)
-    }
-
-    /// Disables client authentication
-    pub fn disable_client_authentication(mut self) -> Self {
-        self.config
-            .set_client_certificate_verifier(Arc::new(rustls::NoClientAuth));
-        self
-    }
-
-    /// Sets server private key and a chain of certificates
-    pub fn set_private_key(
-        mut self,
-        cert: Vec<rustls::Certificate>,
-        private_key: rustls::PrivateKey,
-    ) -> Result<Self, rustls::TLSError> {
-        self.config.set_single_cert(cert, private_key)?;
-        Ok(self)
-    }
-}
-
 /// Builds a party of two party protocol who acts as TLS client
 pub struct TlsClientBuilder {
     buffer_capacity: usize,
@@ -289,14 +246,14 @@ impl TlsClientBuilder {
         self,
         domain: webpki::DNSNameRef<'_>,
         addr: A,
-        config: ClientTlsConfig,
+        config: &ClientTlsConfig,
     ) -> io::Result<TwoPartyClientTls<M>>
     where
         A: net::ToSocketAddrs,
         M: Serialize + DeserializeOwned + Clone,
     {
         let conn = net::TcpStream::connect(addr).await?;
-        let tls_conn = TlsConnector::from(Arc::new(config.config))
+        let tls_conn = TlsConnector::from(config.to_rustls_config())
             .connect(domain, conn)
             .await?;
         self.connected(tls_conn)
@@ -321,47 +278,6 @@ impl TlsClientBuilder {
     }
 }
 
-/// Client TLS config
-pub struct ClientTlsConfig {
-    config: rustls::ClientConfig,
-}
-
-impl ClientTlsConfig {
-    /// Creates incomplete TLS client config
-    ///
-    /// To complete it, you need to specify private key, and server CA. Resulting config is fixed
-    /// to support only TLSv1.3 with ciphersuite TLS13_CHACHA20_POLY1305_SHA256.
-    pub fn new() -> Self {
-        let mut config = rustls::ClientConfig::with_ciphersuites(&[
-            &rustls::ciphersuite::TLS13_CHACHA20_POLY1305_SHA256,
-        ]);
-        config.root_store = rustls::RootCertStore::empty();
-
-        Self { config }
-    }
-
-    /// Sets client private key and a chain of certificates
-    pub fn set_private_key(
-        mut self,
-        cert_chain: Vec<rustls::Certificate>,
-        private_key: rustls::PrivateKey,
-    ) -> Result<Self, rustls::TLSError> {
-        self.config
-            .set_single_client_cert(cert_chain, private_key)?;
-        Ok(self)
-    }
-
-    /// Sets server root of trust
-    ///
-    /// Server must provide a certificate matching given CA
-    pub fn set_server_ca(mut self, der_cert: &rustls::Certificate) -> Result<Self, webpki::Error> {
-        let mut store = rustls::RootCertStore::empty();
-        store.add(der_cert)?;
-        self.config.root_store = store;
-        Ok(self)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use futures::TryStreamExt;
@@ -380,18 +296,20 @@ mod tests {
     async fn exchange_tls_server_client_messages() {
         let certs = generate_test_certificates();
 
-        let server_tls_config = ServerTlsConfig::new()
+        let server_tls_config = ServerTlsConfig::builder()
             .set_clients_ca(&certs.client_ca)
             .unwrap()
             .set_private_key(certs.server_cert_chain, certs.server_private_key)
-            .unwrap();
-        let clients_tls_config = ClientTlsConfig::new()
+            .unwrap()
+            .build();
+        let clients_tls_config = ClientTlsConfig::builder()
             .set_server_ca(&certs.server_ca)
             .unwrap()
             .set_private_key(certs.client_cert_chain, certs.client_private_key)
-            .unwrap();
+            .unwrap()
+            .build();
 
-        let mut server = TlsServer::<TestMessage>::bind("127.0.0.1:0", server_tls_config)
+        let mut server = TlsServer::<TestMessage>::bind("127.0.0.1:0", &server_tls_config)
             .await
             .unwrap();
         let server_addr = server.local_addr().unwrap();
@@ -451,7 +369,7 @@ mod tests {
                 .connect::<TestMessage, _>(
                     webpki::DNSNameRef::try_from_ascii(b"my-server.local").unwrap(),
                     server_addr,
-                    clients_tls_config,
+                    &clients_tls_config,
                 )
                 .await
                 .unwrap();

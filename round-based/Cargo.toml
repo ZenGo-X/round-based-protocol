@@ -25,6 +25,7 @@ async-stream = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 round-based-derive = { path = "../round-based-derive", optional = true }
 
+# tls support
 rustls = { version = "0.19", features = ["dangerous_configuration"], optional = true }
 webpki = { version = "0.21", optional = true }
 tokio-rustls = { version = "0.22", optional = true }
@@ -38,7 +39,7 @@ trybuild = "1"
 rcgen = "0.8"
 
 [features]
-default = []
+default = ["tls"]
 derive = ["round-based-derive"]
 tls = ["rustls", "webpki", "tokio-rustls"]
 

@@ -20,6 +20,7 @@ use futures::{ready, Stream};
 use phantom_type::PhantomType;
 
 pub mod two_party;
+pub mod utils;
 
 /// A pair of incoming and outgoing delivery channels
 pub trait Delivery<M> {
