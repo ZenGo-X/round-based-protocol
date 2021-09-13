@@ -194,7 +194,7 @@ where
                 self.state.party_ind(),
                 self.state.message_queue().len()
             );
-            debug!();
+            debug!("");
 
             msgs_pull.append(self.state.message_queue())
         }
