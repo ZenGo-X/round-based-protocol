@@ -6,27 +6,25 @@ use secp256k1::key::PublicKey;
 use secp256k1::{Signature, SECP256K1};
 use sha2::{Digest, Sha256};
 
+use thiserror::Error;
+
 pub struct HelloMsg {
     pub public_key: PublicKey,
     pub room_id: [u8; 32],
     pub signature: Signature,
 }
 
+pub const HELLO_MSG_LEN: usize = 33 + 32 + 64; // PUBLIC_KEY + ROOM_ID + SIGNATURE
+
 impl HelloMsg {
-    pub async fn parse<I>(mut input: I) -> Result<Self, ParseError>
-    where
-        I: AsyncRead + Unpin,
-    {
-        let mut public_key = [0u8; 32];
-        input.read_exact(&mut public_key).await?;
+    pub fn parse(input: &[u8; HELLO_MSG_LEN]) -> Result<Self, ParseError> {
         let public_key =
-            PublicKey::from_slice(&public_key).map_err(ParseError::InvalidSenderPublicKey)?;
+            PublicKey::from_slice(&input[0..33]).map_err(ParseError::InvalidSenderPublicKey)?;
 
         let mut room_id = [0u8; 32];
-        input.read_exact(&mut room_id).await?;
+        room_id.copy_from_slice(&input[33..33 + 32]);
 
-        let mut signature = [0u8; 64];
-        input.read_exact(&mut signature).await?;
+        let mut signature = &input[33 + 32..];
         let signature =
             Signature::from_compact(&signature).map_err(ParseError::InvalidSignature)?;
 
@@ -200,32 +198,42 @@ pub enum MessageDestination {
     P2P(PublicKey),
 }
 
+#[derive(Debug, Error)]
 pub enum ParseError {
+    #[error("received unknown type of message: {0}")]
     UnknownMessageType(u8),
+    #[error("received flag is_broadcast has invalid value: {0}")]
     InvalidIsBroadcastFlag(u8),
-    InvalidSenderPublicKey(secp256k1::Error),
-    InvalidRecipientPublicKey(secp256k1::Error),
-    InvalidSignature(secp256k1::Error),
+    #[error("sender public key is invalid")]
+    InvalidSenderPublicKey(#[source] secp256k1::Error),
+    #[error("recipient public key is invalid")]
+    InvalidRecipientPublicKey(#[source] secp256k1::Error),
+    #[error("signature is invalid")]
+    InvalidSignature(#[source] secp256k1::Error),
+    #[error("message is too large: len={message_len}, limit={limit}")]
     MessageTooLarge { message_len: u16, limit: usize },
-    SignatureMismatched(secp256k1::Error),
-    Io(io::Error),
-    Internal(internal::InternalError),
-}
-
-impl From<io::Error> for ParseError {
-    fn from(err: io::Error) -> Self {
-        Self::Io(err)
-    }
-}
-
-impl From<internal::InternalError> for ParseError {
-    fn from(err: internal::InternalError) -> Self {
-        Self::Internal(err)
-    }
+    #[error("signature doesn't match the message")]
+    SignatureMismatched(#[source] secp256k1::Error),
+    #[error("i/o error")]
+    Io(
+        #[source]
+        #[from]
+        io::Error,
+    ),
+    #[error("internal error")]
+    Internal(
+        #[source]
+        #[from]
+        internal::InternalError,
+    ),
 }
 
 mod internal {
+    use thiserror::Error;
+
+    #[derive(Debug, Error)]
     pub enum InternalError {
-        WrongHashSize(secp256k1::Error),
+        #[error("wrong hash size")]
+        WrongHashSize(#[source] secp256k1::Error),
     }
 }

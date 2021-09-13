@@ -44,5 +44,5 @@
 //!
 //! ## Examples: Client
 
-// mod message;
-// pub mod server;
+mod message;
+pub mod server;

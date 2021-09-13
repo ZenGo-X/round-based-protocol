@@ -24,6 +24,7 @@ pin-project-lite = "0.2"
 async-stream = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 round-based-derive = { path = "../round-based-derive", optional = true }
+thiserror = "1"
 
 # tls support
 rustls = { version = "0.19", features = ["dangerous_configuration"], optional = true }
