@@ -155,6 +155,10 @@ impl<IO> Stream<IO> {
     pub fn client_identity(&self) -> PublicKey {
         self.client_identity
     }
+
+    pub fn into_inner(self) -> TlsStream<IO> {
+        self.stream
+    }
 }
 
 #[cfg(test)]

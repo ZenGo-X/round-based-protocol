@@ -1,9 +1,7 @@
-mod acceptor;
-
-use std::collections::HashMap;
+use std::collections::hash_map::{Entry, HashMap};
 use std::convert::TryFrom;
 use std::mem::size_of;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use secp256k1::{PublicKey, Signature};
 
@@ -12,21 +10,85 @@ use tokio::io::{self, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Notify, RwLock};
 use tokio::task::JoinError;
 
-use crate::delivery::trusted_delivery::message::{
-    HelloMsg, MessageDestination, OutgoingMessage, ParseError,
-};
+use crate::delivery::trusted_delivery::message::{MessageDestination, OutgoingMessage, ParseError};
+
+pub use self::acceptor::*;
+
+mod acceptor;
 
 pub struct Server {
-    rooms: HashMap<[u8; 32], Arc<Room>>,
+    rooms: HashMap<[u8; 32], Weak<Room>>,
 
     number_of_preallocated_messages: usize,
     size_of_preallocated_buffer: usize,
     size_limit: usize,
+    max_msg_size: usize,
+}
+
+impl Server {
+    pub fn new() -> Self {
+        Self {
+            rooms: HashMap::new(),
+
+            number_of_preallocated_messages: 20,
+            size_of_preallocated_buffer: 1024,
+            size_limit: 100_000,
+            max_msg_size: 10_000,
+        }
+    }
+
+    pub fn set_number_of_preallocated_messages(&mut self, n: usize) {
+        self.number_of_preallocated_messages = n
+    }
+    pub fn set_size_of_preallocated_buffer(&mut self, size: usize) {
+        self.size_of_preallocated_buffer = size
+    }
+    pub fn set_size_limit(&mut self, limit: usize) {
+        self.size_limit = limit
+    }
+    pub fn set_max_message_size(&mut self, limit: usize) {
+        self.max_msg_size = limit
+    }
+
+    pub fn get_or_create_room(&mut self, room_id: [u8; 32]) -> Arc<Room> {
+        match self.rooms.entry(room_id) {
+            Entry::Vacant(entry) => {
+                let empty_room = Room::new(
+                    self.number_of_preallocated_messages,
+                    self.size_of_preallocated_buffer,
+                    self.size_limit,
+                    self.max_msg_size,
+                );
+                entry.insert(Arc::downgrade(&empty_room));
+                empty_room
+            }
+            Entry::Occupied(entry) => {
+                let room = entry.into_mut();
+                if let Some(room) = room.upgrade() {
+                    return room;
+                }
+                let empty_room = Room::new(
+                    self.number_of_preallocated_messages,
+                    self.size_of_preallocated_buffer,
+                    self.size_limit,
+                    self.max_msg_size,
+                );
+                *room = Arc::downgrade(&empty_room);
+                empty_room
+            }
+        }
+    }
+
+    pub fn clean_abandoned_rooms(&mut self) {
+        self.rooms.retain(|_room_id, room| room.strong_count() > 0)
+    }
 }
 
 pub struct Room {
     history: RwLock<RoomHistory>,
     history_changed: Notify,
+
+    max_msg_size: usize,
 }
 
 impl Room {
@@ -34,6 +96,7 @@ impl Room {
         number_of_preallocated_messages: usize,
         size_of_preallocated_buffer: usize,
         size_limit: usize,
+        max_msg_size: usize,
     ) -> Arc<Self> {
         Arc::new(Self {
             history: RwLock::new(RoomHistory {
@@ -42,21 +105,23 @@ impl Room {
                 size_limit,
             }),
             history_changed: Notify::new(),
+
+            max_msg_size,
         })
     }
 
-    pub async fn join<I, O>(
+    pub async fn join<IO>(
         self: Arc<Self>,
-        party_public_key: PublicKey,
-        input: I,
-        mut output: O,
-        max_msg_size: usize,
+        stream: Stream<IO>,
     ) -> (ProcessOutgoingsError, ForwardMessagesError)
     where
-        I: AsyncRead + Unpin + Send + 'static,
-        O: AsyncWrite + Unpin + Send + 'static,
+        IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let pk = party_public_key.clone();
+        let client_identity = stream.client_identity();
+        let max_msg_size = self.max_msg_size;
+        let (input, mut output) = io::split(stream.into_inner());
+
+        let pk = client_identity.clone();
         let room = self.clone();
         let process_outgoing = tokio::spawn(async move {
             let mut buffer = vec![0u8; max_msg_size];
@@ -64,7 +129,7 @@ impl Room {
         });
         let forward_messages = tokio::spawn(async move {
             let mut buffer = vec![0u8; max_msg_size];
-            join_room_forward_messages(party_public_key, self, &mut output, &mut buffer).await
+            join_room_forward_messages(client_identity, self, &mut output, &mut buffer).await
         });
 
         let process_outgoing_err = match process_outgoing.await {
@@ -221,6 +286,8 @@ where
             .write_all(&*buffer)
             .await
             .map_err(ForwardMessagesError::SendMessage)?;
+
+        next_msg += 1;
     }
 }
 

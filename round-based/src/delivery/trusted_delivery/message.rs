@@ -1,5 +1,3 @@
-use std::convert::TryFrom;
-
 use tokio::io::{self, AsyncRead, AsyncReadExt};
 
 use secp256k1::key::PublicKey;
@@ -24,7 +22,7 @@ impl HelloMsg {
         let mut room_id = [0u8; 32];
         room_id.copy_from_slice(&input[33..33 + 32]);
 
-        let mut signature = &input[33 + 32..];
+        let signature = &input[33 + 32..];
         let signature =
             Signature::from_compact(&signature).map_err(ParseError::InvalidSignature)?;
 
@@ -41,6 +39,19 @@ impl HelloMsg {
             room_id,
             signature,
         })
+    }
+
+    pub fn to_bytes(&self) -> [u8; HELLO_MSG_LEN] {
+        let mut output = [0u8; HELLO_MSG_LEN];
+
+        // Identity (public key)
+        output[0..33].copy_from_slice(&self.public_key.serialize());
+        // Room ID
+        output[33..33 + 32].copy_from_slice(&self.room_id);
+        // Signature
+        output[33 + 32..].copy_from_slice(&self.signature.serialize_compact());
+
+        output
     }
 }
 
