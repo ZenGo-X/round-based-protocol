@@ -11,6 +11,9 @@ use secp256k1::PublicKey;
 use crate::delivery::trusted_delivery::message::{HelloMsg, HELLO_MSG_LEN};
 use crate::delivery::utils::tls::ServerTlsConfig;
 
+type TlsHandshake<IO> =
+    crate::delivery::trusted_delivery::tls_handshake::TlsHandshake<TlsAccept<IO>, TlsStream<IO>>;
+
 pub struct Acceptor {
     tls_acceptor: TlsAcceptor,
 }
@@ -19,12 +22,6 @@ pub struct Accept<IO> {
     tls_handshake: TlsHandshake<IO>,
     hello_msg: [u8; HELLO_MSG_LEN],
     hello_msg_received: usize,
-}
-
-enum TlsHandshake<IO> {
-    Empty,
-    InProgress(TlsAccept<IO>),
-    Completed(TlsStream<IO>),
 }
 
 pub struct Stream<IO> {
@@ -67,26 +64,6 @@ where
             hello_msg_received: 0,
         }
     }
-
-    fn poll_handshake<'h>(
-        handshake: &'h mut TlsHandshake<IO>,
-        cx: &mut Context,
-    ) -> Poll<io::Result<&'h mut TlsStream<IO>>> {
-        match handshake {
-            TlsHandshake::Empty => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::Other,
-                "poll after complete",
-            ))),
-            TlsHandshake::Completed(stream) => Poll::Ready(Ok(stream)),
-            TlsHandshake::InProgress(tls_handshake) => {
-                let stream = ready!(Pin::new(tls_handshake).poll(cx))?;
-                *handshake = TlsHandshake::Completed(stream);
-                Poll::Ready(Ok(
-                    handshake.expect_completed("tls handshake guaranteed to be completed")
-                ))
-            }
-        }
-    }
 }
 
 impl<IO> Future for Accept<IO>
@@ -101,7 +78,7 @@ where
             hello_msg,
             hello_msg_received,
         } = &mut *self;
-        let stream = ready!(Self::poll_handshake(tls_handshake, cx))?;
+        let stream = ready!(tls_handshake.poll_handshake(cx))?;
         while *hello_msg_received < HELLO_MSG_LEN {
             let buffer = &mut hello_msg[*hello_msg_received..];
             let mut buffer = ReadBuf::new(buffer);
@@ -121,29 +98,6 @@ where
             client_identity: hello_msg.public_key,
             room_id: hello_msg.room_id,
         }))
-    }
-}
-
-impl<IO> TlsHandshake<IO> {
-    pub fn take_completed(&mut self) -> Result<TlsStream<IO>, Self> {
-        match std::mem::replace(self, TlsHandshake::Empty) {
-            TlsHandshake::Completed(stream) => Ok(stream),
-            state => Err(state),
-        }
-    }
-
-    #[track_caller]
-    pub fn expect_completed(&mut self, msg: &str) -> &mut TlsStream<IO> {
-        match self {
-            TlsHandshake::Completed(stream) => stream,
-            TlsHandshake::InProgress(_) => panic!(
-                "expected completed handshake, actually it's in progress: {}",
-                msg
-            ),
-            TlsHandshake::Empty => {
-                panic!("expected completed handshake, actually it's empty: {}", msg)
-            }
-        }
     }
 }
 
