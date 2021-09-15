@@ -18,12 +18,13 @@ use phantom_type::PhantomType;
 use pin_project_lite::pin_project;
 use serde::{de::DeserializeOwned, Serialize};
 
+use crate::delivery::OutgoingChannel;
 use crate::{DeliverOutgoing, Delivery, Incoming, Outgoing};
 
-pub mod insecure;
-#[cfg(feature = "tls")]
-#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
-pub mod tls;
+// pub mod insecure;
+// #[cfg(feature = "tls")]
+// #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
+// pub mod tls;
 
 /// Index of party who runs a server
 pub const SERVER_IDX: u16 = 0;
@@ -155,15 +156,53 @@ impl<L> SendLink<L> {
     }
 }
 
-impl<M, S> DeliverOutgoing<M> for SendLink<S>
-where
-    M: Serialize + Clone + Unpin,
-    S: AsyncWrite,
-{
-    type Prepared = PreparedMsg<M>;
+impl<S: AsyncWrite> OutgoingChannel for SendLink<S> {
     type Error = io::Error;
 
-    fn prepare(self: Pin<&Self>, msg: Outgoing<&M>) -> io::Result<Self::Prepared> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+        let me = self.as_mut().project();
+
+        if *me.buffer_filled == 0 {
+            // Have nothing to send
+            Poll::Ready(Ok(()))
+        } else if *me.buffer_sent < *me.buffer_filled {
+            // We have more data to write
+            match me
+                .link
+                .poll_write(cx, &me.buffer[*me.buffer_sent..*me.buffer_filled])
+            {
+                Poll::Ready(Ok(written)) => {
+                    *me.buffer_sent += written;
+                    // Need to repeat flush
+                    Self::poll_flush(self, cx)
+                }
+                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+                Poll::Pending => Poll::Pending,
+            }
+        } else {
+            // We've wrote all the data to the I/O, need to flush it
+            ready!(me.link.poll_flush(cx))?;
+            *me.buffer_filled = 0;
+            *me.buffer_sent = 0;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+        ready!(Self::poll_flush(self.as_mut(), cx))?;
+        let me = self.project();
+        me.link.poll_shutdown(cx)
+    }
+}
+
+impl<'m, M, S> DeliverOutgoing<'m, &'m M> for SendLink<S>
+where
+    M: Serialize + Unpin,
+    S: AsyncWrite,
+{
+    type Prepared = PreparedMsg<'m, M>;
+
+    fn prepare(self: Pin<&Self>, msg: Outgoing<&'m M>) -> io::Result<Self::Prepared> {
         if !(msg.recipient.is_none() || msg.recipient == Some(self.counterparty_id)) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -185,14 +224,14 @@ where
         }
         Ok(PreparedMsg {
             serialized_size,
-            msg: msg.msg.clone(),
+            msg: msg.msg,
         })
     }
 
     fn poll_start_send(
         mut self: Pin<&mut Self>,
         cx: &mut Context,
-        msg: &Self::Prepared,
+        msg: &mut Self::Prepared,
     ) -> Poll<io::Result<()>> {
         let me = self.as_mut().project();
 
@@ -205,7 +244,7 @@ where
         // Check if we have enough capacity in the buffer
         while usize::from(msg.serialized_size) + 2 > self.as_ref().buffer_capacity() {
             // Not enough capacity - need to flush the buffer
-            match <Self as DeliverOutgoing<M>>::poll_flush(self.as_mut(), cx) {
+            match Self::poll_flush(self.as_mut(), cx) {
                 Poll::Ready(Ok(())) => (),
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
@@ -228,46 +267,11 @@ where
 
         Poll::Ready(Ok(()))
     }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
-        let me = self.as_mut().project();
-
-        if *me.buffer_filled == 0 {
-            // Have nothing to send
-            Poll::Ready(Ok(()))
-        } else if *me.buffer_sent < *me.buffer_filled {
-            // We have more data to write
-            match me
-                .link
-                .poll_write(cx, &me.buffer[*me.buffer_sent..*me.buffer_filled])
-            {
-                Poll::Ready(Ok(written)) => {
-                    *me.buffer_sent += written;
-                    // Need to repeat flush
-                    <Self as DeliverOutgoing<M>>::poll_flush(self, cx)
-                }
-                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-                Poll::Pending => Poll::Pending,
-            }
-        } else {
-            // We've wrote all the data to the I/O, need to flush it
-            ready!(me.link.poll_flush(cx))?;
-            *me.buffer_filled = 0;
-            *me.buffer_sent = 0;
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
-        ready!(<Self as DeliverOutgoing<M>>::poll_flush(self.as_mut(), cx))?;
-        let me = self.project();
-        me.link.poll_shutdown(cx)
-    }
 }
 
 /// Message sending over [SendLink]
-pub struct PreparedMsg<M> {
-    msg: M,
+pub struct PreparedMsg<'m, M> {
+    msg: &'m M,
     serialized_size: u16,
 }
 
@@ -421,7 +425,10 @@ mod tests {
     use rand_chacha::ChaCha20Rng;
     use serde::{Deserialize, Serialize};
 
-    use crate::delivery::{DeliverOutgoing, DeliverOutgoingExt, Delivery, Incoming, Outgoing};
+    use crate::delivery::{
+        DeliverOutgoing, DeliverOutgoingExt, Delivery, Incoming, Outgoing, OutgoingChannel,
+        OutgoingChannelExt,
+    };
 
     use super::{Side, TwoParty};
 
@@ -482,14 +489,14 @@ mod tests {
         S: Delivery<Bytes> + Send + 'static,
         R: rand::distributions::uniform::SampleRange<usize> + Clone + Send + 'static,
         S::Send: Unpin,
-        <S::Send as DeliverOutgoing<Bytes>>::Prepared: Unpin + Send,
-        <S::Send as DeliverOutgoing<Bytes>>::Error: Debug,
+        <S::Send as OutgoingChannel>::Error: Debug,
         <S::Receive as TryStream>::Error: Debug,
         C::Send: Unpin,
-        <C::Send as DeliverOutgoing<Bytes>>::Prepared: Unpin + Send,
-        <C::Send as DeliverOutgoing<Bytes>>::Error: Debug,
+        <C::Send as OutgoingChannel>::Error: Debug,
         <C::Receive as TryStream>::Error: Debug,
     {
+        let local_set = tokio::task::LocalSet::new();
+
         // Make randomness deterministic and reproducible
         let server_seed: [u8; 32] = random();
         let client_seed: [u8; 32] = random();
@@ -503,68 +510,57 @@ mod tests {
         let local_rng = server_rng.clone();
         let remote_rng = client_rng.clone();
         let msg_len_range = msg_len_range_.clone();
-        let server = tokio::spawn(async move {
-            let (recv, send) = server.split();
-
-            // Server sends chunks of random bytes to the client
-            let sending = tokio::spawn(push_chunks_of_random_bytes_through_link(
-                local_rng,
-                send,
-                msg_len_range.clone(),
-                msgs_n,
-                0,
-                1,
-            ));
-
-            // Server receives chunks of random bytes from the client and asserts that they are
-            // what we expected to receive
-            let receiving = tokio::spawn(receive_chunks_of_random_bytes_and_compare(
-                remote_rng,
-                recv,
-                msg_len_range,
-                msgs_n,
-                0,
-                1,
-            ));
-
-            sending.await.unwrap();
-            receiving.await.unwrap();
-        });
+        let (server_recv, server_send) = server.split();
+        // Server sends chunks of random bytes to the client
+        let server_sending = local_set.spawn_local(push_chunks_of_random_bytes_through_link(
+            local_rng,
+            server_send,
+            msg_len_range.clone(),
+            msgs_n,
+            0,
+            1,
+        ));
+        // Server receives chunks of random bytes from the client and asserts that they are
+        // what we expected to receive
+        let server_receiving = local_set.spawn_local(receive_chunks_of_random_bytes_and_compare(
+            remote_rng,
+            server_recv,
+            msg_len_range,
+            msgs_n,
+            0,
+            1,
+        ));
 
         // The client
         let local_rng = client_rng.clone();
         let remote_rng = server_rng.clone();
         let msg_len_range = msg_len_range_.clone();
-        let client = tokio::spawn(async move {
-            let (recv, send) = client.split();
+        let (client_recv, client_send) = client.split();
+        // Client sends chunks of random bytes to the server
+        let client_sending = local_set.spawn_local(push_chunks_of_random_bytes_through_link(
+            local_rng,
+            client_send,
+            msg_len_range.clone(),
+            msgs_n,
+            1,
+            0,
+        ));
+        // Client receives chunks of random bytes from the server and asserts that they are
+        // what we expected to receive
+        let client_receiving = local_set.spawn_local(receive_chunks_of_random_bytes_and_compare(
+            remote_rng,
+            client_recv,
+            msg_len_range,
+            msgs_n,
+            1,
+            0,
+        ));
 
-            // Client sends chunks of random bytes to the server
-            let sending = tokio::spawn(push_chunks_of_random_bytes_through_link(
-                local_rng,
-                send,
-                msg_len_range.clone(),
-                msgs_n,
-                1,
-                0,
-            ));
-
-            // Client receives chunks of random bytes from the server and asserts that they are
-            // what we expected to receive
-            let receiving = tokio::spawn(receive_chunks_of_random_bytes_and_compare(
-                remote_rng,
-                recv,
-                msg_len_range,
-                msgs_n,
-                1,
-                0,
-            ));
-
-            sending.await.unwrap();
-            receiving.await.unwrap();
-        });
-
-        server.await.unwrap();
-        client.await.unwrap();
+        local_set.await;
+        server_sending.await.unwrap();
+        server_receiving.await.unwrap();
+        client_sending.await.unwrap();
+        client_receiving.await.unwrap();
     }
 
     async fn push_chunks_of_random_bytes_through_link<R, Link, Range>(
@@ -576,8 +572,7 @@ mod tests {
         counterparty_id: u16,
     ) where
         R: RngCore,
-        Link: DeliverOutgoing<Bytes> + Unpin,
-        Link::Prepared: Unpin,
+        Link: for<'m> DeliverOutgoing<'m, &'m Bytes> + Unpin,
         Link::Error: Debug,
         Range: rand::distributions::uniform::SampleRange<usize> + Clone,
     {

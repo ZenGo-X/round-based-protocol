@@ -21,8 +21,8 @@ use futures::{ready, Stream};
 // #[cfg(feature = "trusted-delivery")]
 // #[cfg_attr(docsrs, doc(cfg(feature = "trusted-delivery")))]
 // pub mod trusted_delivery;
-// pub mod two_party;
-// pub mod utils;
+pub mod two_party;
+pub mod utils;
 
 /// A pair of incoming and outgoing delivery channels
 pub trait Delivery<M, R = M>
