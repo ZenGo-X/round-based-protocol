@@ -25,9 +25,12 @@ use futures::{ready, Stream};
 // pub mod utils;
 
 /// A pair of incoming and outgoing delivery channels
-pub trait Delivery<M> {
+pub trait Delivery<M, R = M>
+where
+    R: ?Sized,
+{
     /// Outgoing delivery channel
-    type Send: for<'m> DeliverOutgoing<'m, &'m M> + Send + Unpin;
+    type Send: for<'m> DeliverOutgoing<'m, &'m R> + Send + Unpin;
     /// Incoming delivery channel
     type Receive: Stream<Item = Result<Incoming<M>, Self::ReceiveError>> + Send + Unpin + 'static;
     /// Error of incoming delivery channel
