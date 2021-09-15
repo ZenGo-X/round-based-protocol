@@ -26,12 +26,12 @@ pub struct DecommitMsg {
     pub randomness: [u8; 32],
 }
 
-async fn protocol_of_random_generation<'m, R, M>(
+async fn protocol_of_random_generation<R, M>(
     party: M,
     i: u16,
     n: u16,
     mut rng: R,
-) -> Result<[u8; 32], Error<party::ReceiveError<M>, party::SendError<'m, M>>>
+) -> Result<[u8; 32], Error<party::ReceiveError<M>, party::SendError<M>>>
 where
     M: Mpc<ProtocolMessage = Msg>,
     R: RngCore,

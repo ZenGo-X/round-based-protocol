@@ -1,16 +1,13 @@
 use phantom_type::PhantomType;
 
 use crate::blocking::{Blocking, SpawnBlocking, TokioSpawnBlocking};
-use crate::delivery::{DeliverOutgoing, Delivery};
+use crate::delivery::{Delivery, OutgoingChannel};
 use crate::rounds::ProtocolMessage;
 
 pub type ReceiveError<M> =
     <<M as Mpc>::Delivery as Delivery<<M as Mpc>::ProtocolMessage>>::ReceiveError;
-pub type SendError<'m, M> =
-    <<<M as Mpc>::Delivery as Delivery<<M as Mpc>::ProtocolMessage>>::Send as DeliverOutgoing<
-        'm,
-        &'m <M as Mpc>::ProtocolMessage,
-    >>::Error;
+pub type SendError<M> =
+    <<<M as Mpc>::Delivery as Delivery<<M as Mpc>::ProtocolMessage>>::Send as OutgoingChannel>::Error;
 
 pub trait Mpc: internal::Sealed {
     type ProtocolMessage: ProtocolMessage + Send + 'static;

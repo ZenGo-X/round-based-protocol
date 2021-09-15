@@ -5,7 +5,7 @@ use futures::{ready, Stream};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
-use crate::delivery::{DeliverOutgoing, Delivery, Incoming, Outgoing};
+use crate::delivery::{DeliverOutgoing, Delivery, Incoming, Outgoing, OutgoingChannel};
 use crate::rounds::ProtocolMessage;
 use crate::MpcParty;
 
@@ -107,12 +107,23 @@ pub struct SimulationOutgoing<M> {
     sender: broadcast::Sender<Outgoing<Incoming<M>>>,
 }
 
+impl<M> OutgoingChannel for SimulationOutgoing<M> {
+    type Error = broadcast::error::SendError<()>;
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
 impl<'m, M> DeliverOutgoing<'m, &'m M> for SimulationOutgoing<M>
 where
     M: Clone + Unpin,
 {
     type Prepared = Outgoing<Incoming<M>>;
-    type Error = broadcast::error::SendError<()>;
 
     fn prepare(self: Pin<&Self>, msg: Outgoing<&'m M>) -> Result<Self::Prepared, Self::Error> {
         Ok(Outgoing {
@@ -132,14 +143,6 @@ where
         self.sender
             .send(msg.clone())
             .map_err(|_| broadcast::error::SendError(()))?;
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_close(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 }

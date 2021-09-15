@@ -17,7 +17,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::{ready, Stream};
-use phantom_type::PhantomType;
 
 // #[cfg(feature = "trusted-delivery")]
 // #[cfg_attr(docsrs, doc(cfg(feature = "trusted-delivery")))]
@@ -37,6 +36,22 @@ pub trait Delivery<M> {
     fn split(self) -> (Self::Receive, Self::Send);
 }
 
+/// Manages outgoing delivery channel
+pub trait OutgoingChannel {
+    /// Delivery error
+    type Error;
+
+    /// Flushes the underlying I/O
+    ///
+    /// After it returned `Poll::Ready(Ok(()))`, all the queued messages prior the call are sent.
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>>;
+
+    /// Closes the underlying I/O
+    ///
+    /// Flushes and closes the channel
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>>;
+}
+
 /// Delivers outgoing messages, asynchronously
 ///
 /// The trait defines all the logic related to delivery of outgoing messages. Specifically, given the
@@ -49,11 +64,9 @@ pub trait Delivery<M> {
 ///
 /// [send_all]: DeliverOutgoingExt::send_all
 /// [shutdown]: DeliverOutgoingExt::shutdown
-pub trait DeliverOutgoing<'m, M: 'm> {
+pub trait DeliverOutgoing<'m, M: 'm>: OutgoingChannel {
     /// Message prepared to be sent
     type Prepared: Unpin + 'm;
-    /// Delivery error
-    type Error;
 
     //TODO: open issue - prepare should return `Self::Prepared<'m>`, it must be updated once GATs
     // are stabilized
@@ -71,14 +84,6 @@ pub trait DeliverOutgoing<'m, M: 'm> {
         cx: &mut Context,
         msg: &mut Self::Prepared,
     ) -> Poll<Result<(), Self::Error>>;
-    /// Flushes the underlying I/O
-    ///
-    /// After it returned `Poll::Ready(Ok(()))`, all the queued messages prior the call are sent.
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>>;
-    /// Closes the underlying I/O
-    ///
-    /// Flushes and closes the channel
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>>;
 }
 
 /// Incoming message
@@ -162,7 +167,9 @@ pub trait DeliverOutgoingExt<'m, M: 'm>: DeliverOutgoing<'m, M> {
     {
         self.send_all(iter::once(message))
     }
+}
 
+pub trait OutgoingChannelExt: OutgoingChannel {
     /// Shuts down the outgoing channel
     ///
     /// Method signature is similar to:
@@ -172,7 +179,7 @@ pub trait DeliverOutgoingExt<'m, M: 'm>: DeliverOutgoing<'m, M> {
     ///
     /// Once there is nothing else to send, the channel must be utilized by calling this method which
     /// flushes and closes underlying I/O.
-    fn shutdown<'d>(&'d mut self) -> Shutdown<'d, 'm, M, Self>
+    fn shutdown(&mut self) -> Shutdown<Self>
     where
         Self: Unpin,
     {
@@ -181,6 +188,7 @@ pub trait DeliverOutgoingExt<'m, M: 'm>: DeliverOutgoing<'m, M> {
 }
 
 impl<'m, M: 'm, D> DeliverOutgoingExt<'m, M> for D where D: DeliverOutgoing<'m, M> {}
+impl<D> OutgoingChannelExt for D where D: OutgoingChannel {}
 
 /// A future for [`send_all`](DeliverOutgoingExt::send_all) method
 pub struct SendAll<'d, 'm, M, D, I>
@@ -253,29 +261,25 @@ where
 }
 
 /// A future for [`shutdown`](DeliverOutgoingExt::shutdown) method
-pub struct Shutdown<'d, 'm, M, D>
+pub struct Shutdown<'d, D>
 where
-    D: DeliverOutgoing<'m, M> + Unpin + ?Sized,
+    D: OutgoingChannel + Unpin + ?Sized,
 {
     link: &'d mut D,
-    _ph: PhantomType<fn(&'m M)>,
 }
 
-impl<'d, 'm, M, D> Shutdown<'d, 'm, M, D>
+impl<'d, D> Shutdown<'d, D>
 where
-    D: DeliverOutgoing<'m, M> + Unpin + ?Sized,
+    D: OutgoingChannel + Unpin + ?Sized,
 {
     fn new(link: &'d mut D) -> Self {
-        Self {
-            link,
-            _ph: PhantomType::new(),
-        }
+        Self { link }
     }
 }
 
-impl<'d, 'm, M, D> Future for Shutdown<'d, 'm, M, D>
+impl<'d, D> Future for Shutdown<'d, D>
 where
-    D: DeliverOutgoing<'m, M> + Unpin + ?Sized,
+    D: OutgoingChannel + Unpin + ?Sized,
 {
     type Output = Result<(), D::Error>;
 
