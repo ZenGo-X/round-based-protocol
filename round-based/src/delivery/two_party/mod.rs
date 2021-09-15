@@ -21,10 +21,10 @@ use serde::{de::DeserializeOwned, Serialize};
 use crate::delivery::OutgoingChannel;
 use crate::{DeliverOutgoing, Delivery, Incoming, Outgoing};
 
-// pub mod insecure;
-// #[cfg(feature = "tls")]
-// #[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
-// pub mod tls;
+pub mod insecure;
+#[cfg(feature = "tls")]
+#[cfg_attr(docsrs, doc(cfg(feature = "tls")))]
+pub mod tls;
 
 /// Index of party who runs a server
 pub const SERVER_IDX: u16 = 0;

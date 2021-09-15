@@ -282,11 +282,13 @@ impl TlsClientBuilder {
 mod tests {
     use futures::TryStreamExt;
     use serde::{Deserialize, Serialize};
+    use tokio::task::{spawn_local, LocalSet};
 
     use crate::delivery::utils::tls::mock::MockTls;
     use crate::{DeliverOutgoingExt, Delivery, Incoming, Outgoing};
 
     use super::*;
+    use crate::delivery::OutgoingChannelExt;
 
     #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
     pub struct TestMessage(String);
@@ -295,6 +297,7 @@ mod tests {
     /// exchange messages
     #[tokio::test]
     async fn exchange_tls_server_client_messages() {
+        let local_set = LocalSet::new();
         let mock_tls = MockTls::generate();
 
         let server_tls_config = mock_tls.issue_server_cert(vec!["my-server.local".to_string()]);
@@ -306,12 +309,12 @@ mod tests {
         let server_addr = server.local_addr().unwrap();
 
         // The server
-        let server = tokio::spawn(async move {
+        let server = local_set.spawn_local(async move {
             let (link, _addr) = server.accept().await.unwrap();
             let (recv, mut send) = link.split();
 
             // Server sends some messages to the client
-            let sending = tokio::spawn(async move {
+            let sending = spawn_local(async move {
                 let msgs = vec![
                     "Hi, client!".to_string(),
                     "Wanna see some ads?".to_string(),
@@ -324,14 +327,12 @@ mod tests {
                 .await
                 .unwrap();
                 // Shutdown the channel
-                DeliverOutgoingExt::<TestMessage>::shutdown(&mut send)
-                    .await
-                    .unwrap();
+                send.shutdown().await.unwrap();
             });
 
             // Server receives messages from the client and asserts that they are what we
             // expected to receive
-            let receiving = tokio::spawn(async move {
+            let receiving = spawn_local(async move {
                 let msgs = recv.try_collect::<Vec<_>>().await.unwrap();
                 let expected_msgs = vec![
                     Incoming {
@@ -355,7 +356,7 @@ mod tests {
         });
 
         // The client
-        let client = tokio::spawn(async move {
+        let client = local_set.spawn_local(async move {
             let link = TlsClientBuilder::new()
                 .connect::<TestMessage, _>(
                     webpki::DNSNameRef::try_from_ascii(b"my-server.local").unwrap(),
@@ -367,7 +368,7 @@ mod tests {
             let (recv, mut send) = link.split();
 
             // Client sends some messages to the server
-            let sending = tokio::spawn(async move {
+            let sending = spawn_local(async move {
                 let msgs = vec![
                     "Hi, server!".to_string(),
                     "No thanks".to_string(),
@@ -380,14 +381,12 @@ mod tests {
                 .await
                 .unwrap();
                 // Shutdown the channel
-                DeliverOutgoingExt::<TestMessage>::shutdown(&mut send)
-                    .await
-                    .unwrap();
+                send.shutdown().await.unwrap();
             });
 
             // Client receives messages from the server and asserts that they are what we
             // expected to receive
-            let receiving = tokio::spawn(async move {
+            let receiving = spawn_local(async move {
                 let msgs = recv.try_collect::<Vec<_>>().await.unwrap();
                 let expected_msgs = vec![
                     Incoming {
@@ -410,6 +409,7 @@ mod tests {
             receiving.await.unwrap();
         });
 
+        local_set.await;
         client.await.unwrap();
         server.await.unwrap();
     }

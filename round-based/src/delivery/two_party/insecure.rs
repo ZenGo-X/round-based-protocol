@@ -241,6 +241,7 @@ mod tests {
     use std::fmt::Debug;
 
     use futures::TryStreamExt;
+    use tokio::task::{spawn_local, LocalSet};
 
     use serde::{Deserialize, Serialize};
 
@@ -255,11 +256,13 @@ mod tests {
     /// exchange messages
     #[tokio::test]
     async fn exchange_server_client_messages() {
+        let local_set = LocalSet::new();
+
         let mut server = Server::<TestMessage>::bind("127.0.0.1:0").await.unwrap();
         let server_addr = server.local_addr().unwrap();
 
         // The client
-        let client = tokio::spawn(async move {
+        let client = local_set.spawn_local(async move {
             let link = ClientBuilder::new()
                 .connect::<TestMessage, _>(server_addr)
                 .await
@@ -267,7 +270,7 @@ mod tests {
             let (recv, mut send) = link.split();
 
             // Client sends 1+2+3 messages to the server
-            let sending = tokio::spawn(async move {
+            let sending = spawn_local(async move {
                 for i in 1..=3 {
                     let msgs = vec![TestMessage(i); usize::from(i)];
                     send.send_all(msgs.iter().map(|msg| Outgoing {
@@ -281,7 +284,7 @@ mod tests {
 
             // Client receives 1+2+3 messages from the server and asserts that they are what we
             // expected to receive
-            let receiving = tokio::spawn(async move {
+            let receiving = spawn_local(async move {
                 let msgs = recv.try_collect::<Vec<_>>().await.unwrap();
                 let expected_msgs = (1..=3)
                     .flat_map(|i| {
@@ -302,13 +305,13 @@ mod tests {
         });
 
         // The server
-        let server = tokio::spawn(async move {
+        let server = local_set.spawn_local(async move {
             let (link, _addr) = server.accept().await.unwrap();
             let (recv, mut send) = link.split();
 
             // Server sends 1+2+3 messages to the client. Note that messages payload is different from
             // what client sends to us
-            let sending = tokio::spawn(async move {
+            let sending = spawn_local(async move {
                 for i in 1..=3 {
                     let msgs = vec![TestMessage(i + 100); usize::from(i)];
                     send.send_all(msgs.iter().map(|msg| Outgoing {
@@ -322,7 +325,7 @@ mod tests {
 
             // Server receives 1+2+3 messages from the client and asserts that they are what we
             // expected to receive
-            let receiving = tokio::spawn(async move {
+            let receiving = spawn_local(async move {
                 let msgs = recv.try_collect::<Vec<_>>().await.unwrap();
                 let expected_msgs = (1..=3)
                     .flat_map(|i| {
@@ -342,6 +345,7 @@ mod tests {
             receiving.await.unwrap();
         });
 
+        local_set.await;
         client.await.unwrap();
         server.await.unwrap();
     }
