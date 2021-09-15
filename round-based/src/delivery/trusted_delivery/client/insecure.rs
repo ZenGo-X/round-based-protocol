@@ -9,7 +9,7 @@ use futures::ready;
 use tokio::io::{self, AsyncRead, AsyncWrite};
 use tokio_rustls::{client::TlsStream, Connect as TlsConnect, TlsConnector};
 
-use secp256k1::{Message, PublicKey, SecretKey, Signature, SECP256K1};
+use secp256k1::{Message, PublicKey, SecretKey, SECP256K1};
 use sha2::{Digest, Sha256};
 
 use crate::delivery::trusted_delivery::message::{HelloMsg, HELLO_MSG_LEN};
@@ -18,6 +18,8 @@ use crate::{DeliverOutgoing, Outgoing};
 
 use super::identity_resolver::IdentityResolver;
 use crate::delivery::OutgoingChannel;
+
+mod incoming;
 
 type TlsHandshake<IO> =
     crate::delivery::trusted_delivery::tls_handshake::TlsHandshake<TlsConnect<IO>, TlsStream<IO>>;
@@ -152,18 +154,18 @@ pub struct OutgoingDelivery<P, IO> {
 }
 
 pub struct PreparedOutgoing<'b> {
-    header: [u8; 36],
+    header: [u8; 100],
     header_len: HeaderLength,
+    header_sent: usize,
     msg: &'b [u8],
-    signature: [u8; 64],
-    sent_bytes: usize,
+    msg_sent: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
 #[repr(usize)]
 enum HeaderLength {
-    Broadcast = 3,
-    P2P = 36,
+    Broadcast = 1 + 64 + 2,
+    P2P = 1 + 33 + 64 + 2,
 }
 
 #[derive(Debug, Error)]
@@ -229,39 +231,40 @@ where
             })
             .transpose()?;
 
-        let mut header = [0u8; 36];
-        let header_len;
-        match recipient {
-            Some(recipient) => {
-                header[0] = 1;
-                header[1..34].copy_from_slice(&recipient.serialize());
-                header[34..36].copy_from_slice(&msg_len.to_be_bytes());
-                header_len = HeaderLength::P2P;
-            }
-            None => {
-                header[0] = 0;
-                header[1..3].copy_from_slice(&msg_len.to_be_bytes());
-                header_len = HeaderLength::Broadcast;
-            }
-        };
-
         let hashed_msg = Sha256::new()
             .chain(recipient.map(PublicKey::serialize).unwrap_or([0u8; 33]))
             .chain(msg.msg)
             .finalize();
         let hashed_msg =
             Message::from_slice(hashed_msg.as_slice()).expect("sha256 output can be signed");
-
         let signature = SECP256K1
             .sign(&hashed_msg, &self.identity_key)
             .serialize_compact();
 
+        let mut header = [0u8; 100];
+        let header_len;
+        match recipient {
+            Some(recipient) => {
+                header[0] = 1;
+                header[1..1 + 33].copy_from_slice(&recipient.serialize());
+                header[1 + 33..1 + 33 + 64].copy_from_slice(&signature);
+                header[1 + 33 + 64..1 + 33 + 64 + 2].copy_from_slice(&msg_len.to_be_bytes());
+                header_len = HeaderLength::P2P;
+            }
+            None => {
+                header[0] = 0;
+                header[1..1 + 64].copy_from_slice(&signature);
+                header[1 + 64..1 + 64 + 2].copy_from_slice(&msg_len.to_be_bytes());
+                header_len = HeaderLength::Broadcast;
+            }
+        };
+
         Ok(PreparedOutgoing {
             header,
             header_len,
+            header_sent: 0,
             msg: msg.msg,
-            signature,
-            sent_bytes: 0,
+            msg_sent: 0,
         })
     }
 
@@ -271,24 +274,16 @@ where
         msg: &mut PreparedOutgoing<'b>,
     ) -> Poll<Result<(), SendError>> {
         let header_len = msg.header_len as usize;
-        while msg.sent_bytes < header_len {
-            let header = &msg.header[msg.sent_bytes..header_len];
+        while msg.header_sent < header_len {
+            let header = &msg.header[msg.header_sent..header_len];
             let sent_bytes = ready!(Pin::new(&mut self.channel).poll_write(cx, header))?;
-            msg.sent_bytes += sent_bytes;
+            msg.header_sent += sent_bytes;
         }
 
-        while msg.sent_bytes < header_len + msg.msg.len() {
-            let offset = msg.sent_bytes - header_len;
+        while msg.msg_sent < msg.msg.len() {
             let sent_bytes =
-                ready!(Pin::new(&mut self.channel).poll_write(cx, &msg.msg[offset..]))?;
-            msg.sent_bytes += sent_bytes;
-        }
-
-        while msg.sent_bytes < header_len + msg.msg.len() + 64 {
-            let offset = msg.sent_bytes - (header_len + msg.msg.len());
-            let sent_bytes =
-                ready!(Pin::new(&mut self.channel).poll_write(cx, &msg.signature[offset..]))?;
-            msg.sent_bytes += sent_bytes;
+                ready!(Pin::new(&mut self.channel).poll_write(cx, &msg.msg[msg.msg_sent..]))?;
+            msg.msg_sent += sent_bytes;
         }
 
         Poll::Ready(Ok(()))

@@ -58,71 +58,22 @@ impl HelloMsg {
 pub struct IncomingMessage<'b> {
     pub sender: PublicKey,
     pub is_broadcast: bool,
-    pub message: &'b [u8],
     pub signature: Signature,
+    pub message: &'b [u8],
 }
 
 impl<'b> IncomingMessage<'b> {
-    pub async fn parse<I>(
-        public_key: &PublicKey,
-        buffer: &'b mut [u8],
-        mut input: I,
-    ) -> Result<IncomingMessage<'b>, ParseError>
-    where
-        I: AsyncRead + Unpin,
-    {
-        let mut sender = [0u8; 33];
-        input.read_exact(&mut sender).await?;
-        let sender = PublicKey::from_slice(&sender).map_err(ParseError::InvalidSenderPublicKey)?;
-
-        let mut is_broadcast = [0u8; 1];
-        input.read_exact(&mut is_broadcast).await?;
-        let is_broadcast = match is_broadcast[0] {
-            0 => false,
-            1 => true,
-            x => return Err(ParseError::InvalidIsBroadcastFlag(x)),
-        };
-
-        let mut message_len = [0u8; 2];
-        input.read_exact(&mut message_len).await?;
-        let message_len = u16::from_be_bytes(message_len);
-
-        if buffer.len() < usize::from(message_len) {
-            return Err(ParseError::MessageTooLarge {
-                message_len,
-                limit: buffer.len(),
-            });
-        }
-
-        let message = &mut buffer[0..usize::from(message_len)];
-        input.read_exact(message).await?;
-        let message = &*message;
-
-        let mut signature = [0u8; 64];
-        input.read_exact(&mut signature).await?;
-        let signature =
-            Signature::from_compact(&signature).map_err(ParseError::InvalidSignature)?;
-
+    pub fn verify(&self, recipient_identity: &PublicKey) -> Result<(), secp256k1::Error> {
         let message_hash = Sha256::new()
-            .chain(if is_broadcast {
+            .chain(if self.is_broadcast {
                 [0u8; 33]
             } else {
-                public_key.serialize()
+                recipient_identity.serialize()
             })
-            .chain(message)
+            .chain(self.message)
             .finalize();
-        let message_hash = secp256k1::Message::from_slice(message_hash.as_ref())
-            .map_err(internal::InternalError::WrongHashSize)?;
-        SECP256K1
-            .verify(&message_hash, &signature, public_key)
-            .map_err(ParseError::SignatureMismatched)?;
-
-        Ok(IncomingMessage {
-            sender,
-            is_broadcast,
-            message,
-            signature,
-        })
+        let message_hash = secp256k1::Message::from_slice(message_hash.as_ref())?;
+        SECP256K1.verify(&message_hash, &self.signature, &self.sender)
     }
 }
 
@@ -162,6 +113,11 @@ impl<'b> OutgoingMessage<'b> {
             ty => return Err(ParseError::UnknownMessageType(ty)),
         };
 
+        let mut signature = [0u8; 64];
+        input.read_exact(&mut signature).await?;
+        let signature =
+            Signature::from_compact(&signature).map_err(ParseError::InvalidSignature)?;
+
         let mut message_len = [0u8; 2];
         input.read_exact(&mut message_len).await?;
         let message_len = u16::from_be_bytes(message_len);
@@ -176,11 +132,6 @@ impl<'b> OutgoingMessage<'b> {
         let message = &mut buffer[0..usize::from(message_len)];
         input.read_exact(message).await?;
         let message = &*message;
-
-        let mut signature = [0u8; 64];
-        input.read_exact(&mut signature).await?;
-        let signature =
-            Signature::from_compact(&signature).map_err(ParseError::InvalidSignature)?;
 
         let message_hash = Sha256::new()
             .chain(match &recipient {

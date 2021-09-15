@@ -44,6 +44,8 @@
 //!
 //! ## Examples: Client
 
+#![allow(dead_code)] // TODO: remove
+
 pub mod client;
 mod message;
 pub mod server;

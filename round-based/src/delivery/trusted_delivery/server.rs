@@ -266,19 +266,18 @@ where
             MessageDestination::P2P(_) => 0,
             MessageDestination::Broadcast => 1,
         };
-        // message length (u16)
+        // Signature
+        buffer[34..34 + 64].copy_from_slice(&header.signature.serialize_compact());
+        // Message length (u16)
         let message_len = u16::try_from(header.len).map_err(|_| {
             ForwardMessagesError::MessageSizeDoestFitToU16 {
                 message_size: header.len,
             }
         })?;
-        buffer[34..36].copy_from_slice(&message_len.to_be_bytes());
-        // message
-        buffer[36..36 + header.len]
+        buffer[34 + 64..34 + 64 + 2].copy_from_slice(&message_len.to_be_bytes());
+        // Message
+        buffer[34 + 64 + 2..]
             .copy_from_slice(&history.messages[header.offset..header.offset + header.len]);
-        // signature
-        buffer[36 + header.len..36 + header.len + 64]
-            .copy_from_slice(&header.signature.serialize_compact());
 
         // 2. Release history lock and send the message
         drop(history);
