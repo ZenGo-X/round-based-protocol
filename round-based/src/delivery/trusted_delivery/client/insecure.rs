@@ -14,9 +14,10 @@ use sha2::{Digest, Sha256};
 
 use crate::delivery::trusted_delivery::message::{HelloMsg, HELLO_MSG_LEN};
 use crate::delivery::utils::tls::ClientTlsConfig;
-use crate::Outgoing;
+use crate::{DeliverOutgoing, Outgoing};
 
 use super::identity_resolver::IdentityResolver;
+use crate::delivery::OutgoingChannel;
 
 type TlsHandshake<IO> =
     crate::delivery::trusted_delivery::tls_handshake::TlsHandshake<TlsConnect<IO>, TlsStream<IO>>;
@@ -166,6 +167,22 @@ enum HeaderLength {
 }
 
 #[derive(Debug, Error)]
+pub enum SendError {
+    #[error("malformed message")]
+    MalformedMessage(
+        #[from]
+        #[source]
+        MalformedMessage,
+    ),
+    #[error("i/o error")]
+    Io(
+        #[from]
+        #[source]
+        io::Error,
+    ),
+}
+
+#[derive(Debug, Error)]
 pub enum MalformedMessage {
     #[error("destination party is unknown")]
     UnknownParty(u16),
@@ -173,15 +190,34 @@ pub enum MalformedMessage {
     MessageTooLong { len: usize },
 }
 
-impl<P, IO> OutgoingDelivery<P, IO>
+impl<P, IO> OutgoingChannel for OutgoingDelivery<P, IO>
 where
     P: IdentityResolver + Unpin,
     IO: AsyncRead + AsyncWrite + Unpin,
 {
-    pub fn prepare<'b>(
-        &self,
+    type Error = SendError;
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        ready!(Pin::new(&mut self.channel).poll_flush(cx))?;
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+        ready!(Pin::new(&mut self.channel).poll_shutdown(cx))?;
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl<'b, P, IO> DeliverOutgoing<'b, &'b [u8]> for OutgoingDelivery<P, IO>
+where
+    P: IdentityResolver + Unpin,
+    IO: AsyncRead + AsyncWrite + Unpin,
+{
+    type Prepared = PreparedOutgoing<'b>;
+    fn prepare(
+        self: Pin<&Self>,
         msg: Outgoing<&'b [u8]>,
-    ) -> Result<PreparedOutgoing<'b>, MalformedMessage> {
+    ) -> Result<PreparedOutgoing<'b>, SendError> {
         let msg_len = u16::try_from(msg.msg.len())
             .or(Err(MalformedMessage::MessageTooLong { len: msg.msg.len() }))?;
         let recipient = msg
@@ -229,11 +265,11 @@ where
         })
     }
 
-    pub fn poll_send(
+    fn poll_start_send(
         mut self: Pin<&mut Self>,
         cx: &mut Context,
-        msg: &mut PreparedOutgoing,
-    ) -> Poll<io::Result<()>> {
+        msg: &mut PreparedOutgoing<'b>,
+    ) -> Poll<Result<(), SendError>> {
         let header_len = msg.header_len as usize;
         while msg.sent_bytes < header_len {
             let header = &msg.header[msg.sent_bytes..header_len];

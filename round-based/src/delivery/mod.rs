@@ -18,9 +18,9 @@ use std::task::{Context, Poll};
 
 use futures::{ready, Stream};
 
-// #[cfg(feature = "trusted-delivery")]
-// #[cfg_attr(docsrs, doc(cfg(feature = "trusted-delivery")))]
-// pub mod trusted_delivery;
+#[cfg(feature = "trusted-delivery")]
+#[cfg_attr(docsrs, doc(cfg(feature = "trusted-delivery")))]
+pub mod trusted_delivery;
 pub mod two_party;
 pub mod utils;
 
