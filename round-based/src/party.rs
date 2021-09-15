@@ -6,9 +6,10 @@ use crate::rounds::ProtocolMessage;
 
 pub type ReceiveError<M> =
     <<M as Mpc>::Delivery as Delivery<<M as Mpc>::ProtocolMessage>>::ReceiveError;
-pub type SendError<M> =
+pub type SendError<'m, M> =
     <<<M as Mpc>::Delivery as Delivery<<M as Mpc>::ProtocolMessage>>::Send as DeliverOutgoing<
-        <M as Mpc>::ProtocolMessage,
+        'm,
+        &'m <M as Mpc>::ProtocolMessage,
     >>::Error;
 
 pub trait Mpc: internal::Sealed {

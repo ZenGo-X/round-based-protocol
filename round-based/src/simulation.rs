@@ -107,14 +107,14 @@ pub struct SimulationOutgoing<M> {
     sender: broadcast::Sender<Outgoing<Incoming<M>>>,
 }
 
-impl<M> DeliverOutgoing<M> for SimulationOutgoing<M>
+impl<'m, M> DeliverOutgoing<'m, &'m M> for SimulationOutgoing<M>
 where
     M: Clone + Unpin,
 {
     type Prepared = Outgoing<Incoming<M>>;
     type Error = broadcast::error::SendError<()>;
 
-    fn prepare(self: Pin<&Self>, msg: Outgoing<&M>) -> Result<Self::Prepared, Self::Error> {
+    fn prepare(self: Pin<&Self>, msg: Outgoing<&'m M>) -> Result<Self::Prepared, Self::Error> {
         Ok(Outgoing {
             recipient: msg.recipient,
             msg: Incoming {
@@ -127,7 +127,7 @@ where
     fn poll_start_send(
         self: Pin<&mut Self>,
         _cx: &mut Context,
-        msg: &Self::Prepared,
+        msg: &mut Self::Prepared,
     ) -> Poll<Result<(), Self::Error>> {
         self.sender
             .send(msg.clone())

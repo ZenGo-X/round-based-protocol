@@ -19,16 +19,16 @@ use std::task::{Context, Poll};
 use futures::{ready, Stream};
 use phantom_type::PhantomType;
 
-#[cfg(feature = "trusted-delivery")]
-#[cfg_attr(docsrs, doc(cfg(feature = "trusted-delivery")))]
-pub mod trusted_delivery;
-pub mod two_party;
-pub mod utils;
+// #[cfg(feature = "trusted-delivery")]
+// #[cfg_attr(docsrs, doc(cfg(feature = "trusted-delivery")))]
+// pub mod trusted_delivery;
+// pub mod two_party;
+// pub mod utils;
 
 /// A pair of incoming and outgoing delivery channels
 pub trait Delivery<M> {
     /// Outgoing delivery channel
-    type Send: DeliverOutgoing<M> + Send + Unpin;
+    type Send: for<'m> DeliverOutgoing<'m, &'m M> + Send + Unpin;
     /// Incoming delivery channel
     type Receive: Stream<Item = Result<Incoming<M>, Self::ReceiveError>> + Send + Unpin + 'static;
     /// Error of incoming delivery channel
@@ -49,9 +49,9 @@ pub trait Delivery<M> {
 ///
 /// [send_all]: DeliverOutgoingExt::send_all
 /// [shutdown]: DeliverOutgoingExt::shutdown
-pub trait DeliverOutgoing<M> {
+pub trait DeliverOutgoing<'m, M: 'm> {
     /// Message prepared to be sent
-    type Prepared: Unpin;
+    type Prepared: Unpin + 'm;
     /// Delivery error
     type Error;
 
@@ -61,7 +61,7 @@ pub trait DeliverOutgoing<M> {
     ///
     /// Performs one-time calculation on sending message. For instance, it can estimate size of
     /// serialized message to know how much space it needs to claim in a socket buffer.
-    fn prepare(self: Pin<&Self>, msg: Outgoing<&M>) -> Result<Self::Prepared, Self::Error>;
+    fn prepare(self: Pin<&Self>, msg: Outgoing<M>) -> Result<Self::Prepared, Self::Error>;
     /// Queues sending the message
     ///
     /// Once it returned `Poll::Ready(Ok(()))`, the message is queued. In order to actually send the
@@ -69,7 +69,7 @@ pub trait DeliverOutgoing<M> {
     fn poll_start_send(
         self: Pin<&mut Self>,
         cx: &mut Context,
-        msg: &Self::Prepared,
+        msg: &mut Self::Prepared,
     ) -> Poll<Result<(), Self::Error>>;
     /// Flushes the underlying I/O
     ///
@@ -107,7 +107,7 @@ pub struct Outgoing<M> {
 }
 
 /// An extension trait for [DeliverOutgoing] that provides a variety of convenient functions
-pub trait DeliverOutgoingExt<M>: DeliverOutgoing<M> {
+pub trait DeliverOutgoingExt<'m, M: 'm>: DeliverOutgoing<'m, M> {
     /// Sends a sequence of messages
     ///
     /// Method signature is similar to:
@@ -126,12 +126,11 @@ pub trait DeliverOutgoingExt<M>: DeliverOutgoing<M> {
     /// outgoing.send_all(msgs.iter().map(|msg| Outgoing{ recipient: Some(1), msg })).await?;
     /// # Ok(()) }
     /// ```
-    fn send_all<'d, 'm, I>(&'d mut self, messages: I) -> SendAll<'d, 'm, M, Self, I::IntoIter>
+    fn send_all<'d, I>(&'d mut self, messages: I) -> SendAll<'d, 'm, M, Self, I::IntoIter>
     where
         Self: Unpin,
-        I: IntoIterator<Item = Outgoing<&'m M>>,
+        I: IntoIterator<Item = Outgoing<M>>,
         I::IntoIter: Unpin,
-        M: 'm,
     {
         SendAll::new(self, messages.into_iter())
     }
@@ -153,13 +152,13 @@ pub trait DeliverOutgoingExt<M>: DeliverOutgoing<M> {
     /// outgoing.send(Outgoing{ recipient: Some(1), msg: &"Ping" }).await?;
     /// # Ok(()) }
     /// ```
-    fn send<'d, 'm>(
+    fn send<'d>(
         &'d mut self,
-        message: Outgoing<&'m M>,
-    ) -> SendAll<'d, 'm, M, Self, iter::Once<Outgoing<&'m M>>>
+        message: Outgoing<M>,
+    ) -> SendAll<'d, 'm, M, Self, iter::Once<Outgoing<M>>>
     where
         Self: Unpin,
-        M: 'm,
+        M: Unpin,
     {
         self.send_all(iter::once(message))
     }
@@ -173,7 +172,7 @@ pub trait DeliverOutgoingExt<M>: DeliverOutgoing<M> {
     ///
     /// Once there is nothing else to send, the channel must be utilized by calling this method which
     /// flushes and closes underlying I/O.
-    fn shutdown(&mut self) -> Shutdown<M, Self>
+    fn shutdown<'d>(&'d mut self) -> Shutdown<'d, 'm, M, Self>
     where
         Self: Unpin,
     {
@@ -181,14 +180,14 @@ pub trait DeliverOutgoingExt<M>: DeliverOutgoing<M> {
     }
 }
 
-impl<M, D> DeliverOutgoingExt<M> for D where D: DeliverOutgoing<M> {}
+impl<'m, M: 'm, D> DeliverOutgoingExt<'m, M> for D where D: DeliverOutgoing<'m, M> {}
 
 /// A future for [`send_all`](DeliverOutgoingExt::send_all) method
 pub struct SendAll<'d, 'm, M, D, I>
 where
-    I: Iterator<Item = Outgoing<&'m M>>,
-    D: DeliverOutgoing<M> + ?Sized,
-    M: 'm,
+    I: Iterator<Item = Outgoing<M>>,
+    D: DeliverOutgoing<'m, M> + ?Sized,
+    // M: 'm,
 {
     delivery: &'d mut D,
     messages: iter::Fuse<I>,
@@ -197,8 +196,8 @@ where
 
 impl<'d, 'm, M, D, I> SendAll<'d, 'm, M, D, I>
 where
-    I: Iterator<Item = Outgoing<&'m M>> + Unpin,
-    D: DeliverOutgoing<M> + Unpin + ?Sized,
+    I: Iterator<Item = Outgoing<M>> + Unpin,
+    D: DeliverOutgoing<'m, M> + Unpin + ?Sized,
     D::Prepared: Unpin,
 {
     fn new(delivery: &'d mut D, messages: I) -> Self {
@@ -209,8 +208,12 @@ where
         }
     }
 
-    fn try_start_send(&mut self, cx: &mut Context, msg: D::Prepared) -> Poll<Result<(), D::Error>> {
-        match Pin::new(&mut *self.delivery).poll_start_send(cx, &msg) {
+    fn try_start_send(
+        &mut self,
+        cx: &mut Context,
+        mut msg: D::Prepared,
+    ) -> Poll<Result<(), D::Error>> {
+        match Pin::new(&mut *self.delivery).poll_start_send(cx, &mut msg) {
             Poll::Pending => {
                 self.next_message = Some(msg);
                 Poll::Pending
@@ -222,8 +225,8 @@ where
 
 impl<'d, 'm, M, D, I> Future for SendAll<'d, 'm, M, D, I>
 where
-    I: Iterator<Item = Outgoing<&'m M>> + Unpin,
-    D: DeliverOutgoing<M> + Unpin + ?Sized,
+    I: Iterator<Item = Outgoing<M>> + Unpin,
+    D: DeliverOutgoing<'m, M> + Unpin + ?Sized,
     D::Prepared: Unpin,
 {
     type Output = Result<(), D::Error>;
@@ -250,17 +253,17 @@ where
 }
 
 /// A future for [`shutdown`](DeliverOutgoingExt::shutdown) method
-pub struct Shutdown<'d, M, D>
+pub struct Shutdown<'d, 'm, M, D>
 where
-    D: DeliverOutgoing<M> + Unpin + ?Sized,
+    D: DeliverOutgoing<'m, M> + Unpin + ?Sized,
 {
     link: &'d mut D,
-    _ph: PhantomType<M>,
+    _ph: PhantomType<fn(&'m M)>,
 }
 
-impl<'d, M, D> Shutdown<'d, M, D>
+impl<'d, 'm, M, D> Shutdown<'d, 'm, M, D>
 where
-    D: DeliverOutgoing<M> + Unpin + ?Sized,
+    D: DeliverOutgoing<'m, M> + Unpin + ?Sized,
 {
     fn new(link: &'d mut D) -> Self {
         Self {
@@ -270,9 +273,9 @@ where
     }
 }
 
-impl<'d, M, D> Future for Shutdown<'d, M, D>
+impl<'d, 'm, M, D> Future for Shutdown<'d, 'm, M, D>
 where
-    D: DeliverOutgoing<M> + Unpin + ?Sized,
+    D: DeliverOutgoing<'m, M> + Unpin + ?Sized,
 {
     type Output = Result<(), D::Error>;
 
