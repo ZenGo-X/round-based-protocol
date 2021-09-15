@@ -1,4 +1,5 @@
 use std::fmt::Debug;
+use log::debug;
 
 use crate::sm::*;
 
@@ -111,7 +112,7 @@ where
             .map(|p| Party { state: p })
             .collect();
 
-        println!("Simulation starts");
+        debug!("Simulation starts");
 
         let mut msgs_pull = vec![];
 
@@ -160,8 +161,8 @@ where
             return Ok(());
         }
 
-        println!("Party {} wants to proceed", self.state.party_ind());
-        println!("  - before: {:?}", self.state);
+        debug!("Party {} wants to proceed", self.state.party_ind());
+        debug!("  - before: {:?}", self.state);
 
         let round_old = self.state.current_round();
         let stopwatch = benchmark.start();
@@ -169,7 +170,7 @@ where
             Ok(()) => (),
             Err(err) if err.is_critical() => return Err(err),
             Err(err) => {
-                println!("Non-critical error encountered: {:?}", err);
+                debug!("Non-critical error encountered: {:?}", err);
             }
         }
         let round_new = self.state.current_round();
@@ -179,21 +180,21 @@ where
             None
         };
 
-        println!("  - after : {:?}", self.state);
-        println!("  - took  : {:?}", duration);
-        println!();
+        debug!("  - after : {:?}", self.state);
+        debug!("  - took  : {:?}", duration);
+        debug!("");
 
         Ok(())
     }
 
     pub fn send_outgoing(&mut self, msgs_pull: &mut Vec<Msg<P::MessageBody>>) {
         if !self.state.message_queue().is_empty() {
-            println!(
+            debug!(
                 "Party {} sends {} message(s)",
                 self.state.party_ind(),
                 self.state.message_queue().len()
             );
-            println!();
+            debug!("");
 
             msgs_pull.append(self.state.message_queue())
         }
@@ -206,23 +207,23 @@ where
             {
                 continue;
             }
-            println!(
+            debug!(
                 "Party {} got message from={}, broadcast={}: {:?}",
                 self.state.party_ind(),
                 msg.sender,
                 msg.receiver.is_none(),
                 msg.body,
             );
-            println!("  - before: {:?}", self.state);
+            debug!("  - before: {:?}", self.state);
             match self.state.handle_incoming(msg.clone()) {
                 Ok(()) => (),
                 Err(err) if err.is_critical() => return Err(err),
                 Err(err) => {
-                    println!("Non-critical error encountered: {:?}", err);
+                    debug!("Non-critical error encountered: {:?}", err);
                 }
             }
-            println!("  - after : {:?}", self.state);
-            println!();
+            debug!("  - after : {:?}", self.state);
+            debug!("");
         }
         Ok(())
     }
@@ -252,8 +253,8 @@ where
             )
         }
 
-        println!("Simulation is finished");
-        println!();
+        debug!("Simulation is finished");
+        debug!("");
 
         Ok(Some(results))
     } else {
@@ -268,10 +269,10 @@ where
             .map(|p| p.state.party_ind())
             .collect();
 
-        println!("Warning: some of parties have finished the protocol, but other parties have not");
-        println!("Finished parties:     {:?}", finished);
-        println!("Not finished parties: {:?}", not_finished);
-        println!();
+        debug!("Warning: some of parties have finished the protocol, but other parties have not");
+        debug!("Finished parties:     {:?}", finished);
+        debug!("Not finished parties: {:?}", not_finished);
+        debug!("");
 
         Ok(None)
     }

@@ -7,6 +7,9 @@ mod silly_protocol;
 
 #[test]
 fn simulate_silly_protocol() {
+    std::env::set_var("RUST_LOG", "debug");
+    env_logger::init();
+
     let mut rnd = rand::thread_rng();
     let mut simulation = Simulation::new();
     simulation
