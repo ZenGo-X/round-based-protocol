@@ -1,3 +1,6 @@
+## v0.1.6
+- Update documentation of StateMachine
+
 ## v0.1.5
 - Simulation can be configured to enable/disable tracing state changes [#6] \
   Simulation uses [`log`] crate to produce tracing messages, so logging can be configured at application level via logging

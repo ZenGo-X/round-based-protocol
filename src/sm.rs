@@ -42,7 +42,7 @@ pub trait StateMachine {
     /// New messages can be appended to queue only as result of calling
     /// [proceed](StateMachine::proceed) or [handle_incoming](StateMachine::handle_incoming) methods.
     ///
-    /// Messages can be sent in any order.
+    /// Messages can be sent in any order. After message is sent, it should be deleted from the queue.
     fn message_queue(&mut self) -> &mut Vec<Msg<Self::MessageBody>>;
 
     /// Indicates whether StateMachine wants to perform some expensive computation
