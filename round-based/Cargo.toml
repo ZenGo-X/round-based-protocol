@@ -46,6 +46,8 @@ sha2 = "0.9"
 hex = "*"
 trybuild = "1"
 rcgen = "0.8"
+test-case = { version = "1", features = ["hamcrest_assertions"] }
+hamcrest2 = "0.3"
 
 [features]
 default = ["tls"]
