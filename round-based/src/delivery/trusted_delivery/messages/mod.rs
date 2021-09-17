@@ -4,6 +4,9 @@ mod publish_msg;
 mod receive_data;
 mod receive_fixed;
 
+pub use self::{forward_msg::*, hello_msg::*, publish_msg::*};
+pub use self::{receive_data::*, receive_fixed::*};
+
 pub trait FixedSizeMsg
 where
     Self: Sized,

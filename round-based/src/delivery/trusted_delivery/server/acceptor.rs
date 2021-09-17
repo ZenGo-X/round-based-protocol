@@ -2,26 +2,26 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use futures::ready;
-use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf};
+use futures::{ready, Stream as _};
+use tokio::io::{self, AsyncRead, AsyncWrite};
 use tokio_rustls::{server::TlsStream, Accept as TlsAccept, TlsAcceptor};
 
 use secp256k1::PublicKey;
 
-use crate::delivery::trusted_delivery::message::{HelloMsg, HELLO_MSG_LEN};
+use crate::delivery::trusted_delivery::messages::{HelloMsg, ReceiveFixed};
 use crate::delivery::utils::tls::ServerTlsConfig;
-
-type TlsHandshake<IO> =
-    crate::delivery::trusted_delivery::tls_handshake::TlsHandshake<TlsAccept<IO>, TlsStream<IO>>;
 
 pub struct Acceptor {
     tls_acceptor: TlsAcceptor,
 }
 
-pub struct Accept<IO> {
-    tls_handshake: TlsHandshake<IO>,
-    hello_msg: [u8; HELLO_MSG_LEN],
-    hello_msg_received: usize,
+pub struct Accept<IO>(State<IO>);
+
+enum State<IO> {
+    Handshake(TlsAccept<IO>),
+    ReadHello(ReceiveFixed<HelloMsg, TlsStream<IO>>),
+    Accepted(Stream<IO>),
+    Gone,
 }
 
 pub struct Stream<IO> {
@@ -45,11 +45,7 @@ impl Acceptor {
     where
         IO: AsyncRead + AsyncWrite + Unpin,
     {
-        Accept {
-            tls_handshake: TlsHandshake::InProgress(self.tls_acceptor.accept(stream)),
-            hello_msg: [0u8; HELLO_MSG_LEN],
-            hello_msg_received: 0,
-        }
+        Accept(State::Handshake(self.tls_acceptor.accept(stream)))
     }
 }
 
@@ -58,11 +54,7 @@ where
     IO: AsyncRead + AsyncWrite + Unpin,
 {
     pub fn connected(stream: TlsStream<IO>) -> Self {
-        Self {
-            tls_handshake: TlsHandshake::Completed(stream),
-            hello_msg: [0u8; HELLO_MSG_LEN],
-            hello_msg_received: 0,
-        }
+        Self(State::ReadHello(ReceiveFixed::new(stream)))
     }
 }
 
@@ -73,31 +65,32 @@ where
     type Output = io::Result<Stream<IO>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Self {
-            tls_handshake,
-            hello_msg,
-            hello_msg_received,
-        } = &mut *self;
-        let stream = ready!(tls_handshake.poll_handshake(cx))?;
-        while *hello_msg_received < HELLO_MSG_LEN {
-            let buffer = &mut hello_msg[*hello_msg_received..];
-            let mut buffer = ReadBuf::new(buffer);
-            ready!(Pin::new(&mut *stream).poll_read(cx, &mut buffer))?;
-            *hello_msg_received += buffer.filled().len();
+        loop {
+            match &mut self.0 {
+                State::Handshake(handshake) => {
+                    let stream = ready!(Pin::new(handshake).poll(cx))?;
+                    self.0 = State::ReadHello(ReceiveFixed::new(stream));
+                }
+                State::ReadHello(reader) => {
+                    let hello_msg = ready!(Pin::new(reader).poll_next(cx))
+                        .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))??;
+                    self.0 = State::Accepted(Stream {
+                        stream: self.0.take().unwrap_read_hello().into_inner(),
+                        client_identity: hello_msg.identity,
+                        room_id: hello_msg.room_id,
+                    })
+                }
+                State::Accepted(_stream) => {
+                    return Poll::Ready(Ok(self.0.take().unwrap_accepted()))
+                }
+                State::Gone => {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "poll after complete",
+                    )))
+                }
+            }
         }
-
-        let hello_msg = HelloMsg::parse(&*hello_msg)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-        Poll::Ready(Ok(Stream {
-            stream: self
-                .tls_handshake
-                .take_completed()
-                .ok()
-                .expect("guaranteed to be completed"),
-            client_identity: hello_msg.public_key,
-            room_id: hello_msg.room_id,
-        }))
     }
 }
 
@@ -115,6 +108,24 @@ impl<IO> Stream<IO> {
     }
 }
 
+impl<IO> State<IO> {
+    pub fn take(&mut self) -> Self {
+        std::mem::replace(self, Self::Gone)
+    }
+    pub fn unwrap_read_hello(self) -> ReceiveFixed<HelloMsg, TlsStream<IO>> {
+        match self {
+            State::ReadHello(h) => h,
+            _ => panic!("expected ReadHello"),
+        }
+    }
+    pub fn unwrap_accepted(self) -> Stream<IO> {
+        match self {
+            State::Accepted(s) => s,
+            _ => panic!("expected Accepted"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tokio::io::AsyncWriteExt;
@@ -124,9 +135,8 @@ mod tests {
     use rand::rngs::OsRng;
     use rand::RngCore;
     use secp256k1::{PublicKey, SecretKey, SECP256K1};
-    use sha2::{Digest, Sha256};
 
-    use crate::delivery::trusted_delivery::message::HELLO_MSG_LEN;
+    use crate::delivery::trusted_delivery::messages::{FixedSizeMsg, HelloMsg};
     use crate::delivery::utils::tls::mock::MockTls;
 
     use super::Acceptor;
@@ -161,15 +171,8 @@ mod tests {
                 .await
                 .unwrap();
 
-            let hashed_msg = Sha256::digest(&room_id);
-            let hashed_msg = secp256k1::Message::from_slice(hashed_msg.as_slice()).unwrap();
-            let signature = SECP256K1.sign(&hashed_msg, &client_sk);
-
-            let mut msg = [0u8; HELLO_MSG_LEN];
-            msg[0..33].copy_from_slice(&client_pk.serialize());
-            msg[33..33 + 32].copy_from_slice(&room_id);
-            msg[33 + 32..].copy_from_slice(&signature.serialize_compact());
-            tls_conn.write_all(&msg).await.unwrap();
+            let msg = HelloMsg::new(&client_sk, room_id);
+            tls_conn.write_all(&msg.to_bytes()).await.unwrap();
         });
 
         let (conn, _) = server.accept().await.unwrap();
@@ -217,24 +220,22 @@ mod tests {
             let hashed_msg = secp256k1::Message::from_slice(&hashed_msg).unwrap();
             let signature = SECP256K1.sign(&hashed_msg, &client_sk);
 
-            let mut msg = [0u8; HELLO_MSG_LEN];
-            msg[0..33].copy_from_slice(&client_pk.serialize());
-            msg[33..33 + 32].copy_from_slice(&room_id);
-            msg[33 + 32..].copy_from_slice(&signature.serialize_compact());
-            tls_conn.write_all(&msg).await.unwrap();
+            let msg = HelloMsg {
+                identity: client_pk,
+                room_id,
+                signature,
+            };
+            tls_conn.write_all(&msg.to_bytes()).await.unwrap();
         });
 
         let (conn, _) = server.accept().await.unwrap();
         let result = Acceptor::with_config(&server_config).accept(conn).await;
         client.await.unwrap();
 
-        assert!(result.is_err());
-        match result {
-            Ok(_) => panic!("expected error"),
-            Err(e) => {
-                println!("{}", e);
-                assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-            }
+        if let Err(e) = result {
+            assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+        } else {
+            panic!("expected error")
         }
     }
 }

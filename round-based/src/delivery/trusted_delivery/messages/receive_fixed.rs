@@ -7,6 +7,7 @@ use tokio::io::{self, AsyncRead, ReadBuf};
 use thiserror::Error;
 
 use super::{DefaultArray, FixedSizeMsg};
+use std::io::Error;
 
 pub struct ReceiveFixed<M: FixedSizeMsg, IO> {
     channel: IO,
@@ -25,6 +26,10 @@ where
             buffer: DefaultArray::default_array(),
             buffer_written: 0,
         }
+    }
+
+    pub fn into_inner(self) -> IO {
+        self.channel
     }
 }
 
@@ -75,6 +80,15 @@ pub enum ReceiveFixedError<E> {
     ),
     #[error("parse error")]
     Parse(#[source] E),
+}
+
+impl<E: std::error::Error + Send + Sync + 'static> From<ReceiveFixedError<E>> for io::Error {
+    fn from(err: ReceiveFixedError<E>) -> Error {
+        match err {
+            ReceiveFixedError::Io(err) => err,
+            ReceiveFixedError::Parse(err) => io::Error::new(io::ErrorKind::InvalidData, err),
+        }
+    }
 }
 
 #[cfg(test)]
