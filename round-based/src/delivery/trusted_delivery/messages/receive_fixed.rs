@@ -114,7 +114,7 @@ mod test {
     ) -> ParsedMsgs {
         let (reader, mut writer) = io::duplex(capacity as usize);
 
-        // Reader writes messages to the channel
+        // Writer sends messages to the channel
         let messages = messages.to_vec();
         tokio::spawn(async move {
             let count = messages.len();
@@ -132,7 +132,7 @@ mod test {
             writer.shutdown().await.unwrap();
         });
 
-        // Writer receives messages
+        // Reader receives messages
         let mut received = vec![];
         let mut reader = ReceiveFixed::<TestMsg, _>::new(reader);
         while let Some(result) = reader.next().await {
