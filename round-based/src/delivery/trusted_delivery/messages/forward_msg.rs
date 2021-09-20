@@ -15,7 +15,7 @@ pub struct ForwardMsgHeader {
 }
 
 impl ForwardMsgHeader {
-    const SIZE: usize = 33 // Sender identity
+    pub const SIZE: usize = 33 // Sender identity
         + 1  // is_broadcast flag
         + 64 // Signature
         + 2; // Data len (u16)
