@@ -26,7 +26,8 @@ pub struct Server {
     number_of_preallocated_messages: usize,
     size_of_preallocated_buffer: usize,
     size_limit: usize,
-    max_msg_size: usize,
+    size_of_preallocated_buffer_per_channel: usize,
+    buffer_size_limit_per_channel: usize,
 }
 
 impl Server {
@@ -37,7 +38,8 @@ impl Server {
             number_of_preallocated_messages: 20,
             size_of_preallocated_buffer: 1024,
             size_limit: 100_000,
-            max_msg_size: 10_000,
+            size_of_preallocated_buffer_per_channel: 1024,
+            buffer_size_limit_per_channel: 10_000,
         }
     }
 
@@ -50,8 +52,11 @@ impl Server {
     pub fn set_size_limit(&mut self, limit: usize) {
         self.size_limit = limit
     }
-    pub fn set_max_message_size(&mut self, limit: usize) {
-        self.max_msg_size = limit
+    pub fn set_size_of_preallocated_buffer_per_channel(&mut self, size: usize) {
+        self.size_of_preallocated_buffer_per_channel = size
+    }
+    pub fn set_buffer_size_limit_per_channel(&mut self, limit: usize) {
+        self.buffer_size_limit_per_channel = limit
     }
 
     pub fn get_or_create_room(&mut self, room_id: [u8; 32]) -> Arc<Room> {
@@ -61,7 +66,8 @@ impl Server {
                     self.number_of_preallocated_messages,
                     self.size_of_preallocated_buffer,
                     self.size_limit,
-                    self.max_msg_size,
+                    self.size_of_preallocated_buffer_per_channel,
+                    self.buffer_size_limit_per_channel,
                 );
                 entry.insert(Arc::downgrade(&empty_room));
                 empty_room
@@ -75,7 +81,8 @@ impl Server {
                     self.number_of_preallocated_messages,
                     self.size_of_preallocated_buffer,
                     self.size_limit,
-                    self.max_msg_size,
+                    self.size_of_preallocated_buffer_per_channel,
+                    self.buffer_size_limit_per_channel,
                 );
                 *room = Arc::downgrade(&empty_room);
                 empty_room
@@ -92,7 +99,8 @@ pub struct Room {
     history: RwLock<RoomHistory>,
     history_changed: Notify,
 
-    max_msg_size: usize,
+    initial_capacity_per_channel: usize,
+    max_buffer_size_per_channel: usize,
 }
 
 impl Room {
@@ -100,7 +108,8 @@ impl Room {
         number_of_preallocated_messages: usize,
         size_of_preallocated_buffer: usize,
         size_limit: usize,
-        max_msg_size: usize,
+        initial_capacity_per_channel: usize,
+        max_buffer_size_per_channel: usize,
     ) -> Arc<Self> {
         Arc::new(Self {
             history: RwLock::new(RoomHistory {
@@ -110,48 +119,62 @@ impl Room {
             }),
             history_changed: Notify::new(),
 
-            max_msg_size,
+            initial_capacity_per_channel,
+            max_buffer_size_per_channel,
         })
     }
 
-    // pub async fn join<IO>(
-    //     self: Arc<Self>,
-    //     stream: Stream<IO>,
-    // ) -> (ProcessPublishingMessagesError, ForwardMessagesError)
-    // where
-    //     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    // {
-    //     let client_identity = stream.client_identity();
-    //     let max_msg_size = self.max_msg_size;
-    //     let (input, mut output) = io::split(stream.into_inner());
-    //
-    //     let pk = client_identity.clone();
-    //     let room = self.clone();
-    //     let process_outgoing = tokio::spawn(async move {
-    //         let mut buffer = vec![0u8; max_msg_size];
-    //         join_room_outgoing(pk, room, input, &mut buffer).await
-    //     });
-    //     let forward_messages = tokio::spawn(async move {
-    //         let mut buffer = vec![0u8; max_msg_size];
-    //         join_room_forward_messages(client_identity, self, &mut output, &mut buffer).await
-    //     });
-    //
-    //     let process_outgoing_err = match process_outgoing.await {
-    //         Ok(Ok(never)) => never.into_any(),
-    //         Ok(Err(err)) => err,
-    //         Err(err) => ProcessPublishingMessagesError::TaskError(err),
-    //     };
-    //     let forward_messages_err = match forward_messages.await {
-    //         Ok(Ok(never)) => never.into_any(),
-    //         Ok(Err(err)) => err,
-    //         Err(err) => ForwardMessagesError::TaskError(err),
-    //     };
-    //
-    //     (process_outgoing_err, forward_messages_err)
-    // }
+    pub async fn join<IO>(self: Arc<Self>, stream: Stream<IO>) -> Result<(), ServePartyError>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let client_identity = stream.client_identity();
+        let initial_capacity_per_channel = self.initial_capacity_per_channel;
+        let max_buffer_size_per_channel = self.max_buffer_size_per_channel;
+        let (input, mut output) = io::split(stream.into_inner());
+
+        let room = self.clone();
+        let mut publish_messages = tokio::spawn(async move {
+            let mut receive = ReceiveData::with_capacity(
+                input,
+                PublishMsg::new(client_identity),
+                initial_capacity_per_channel,
+            );
+            receive.set_data_limit(max_buffer_size_per_channel);
+            process_publishing_messages(client_identity, room, receive).await
+        });
+        let mut forward_messages = tokio::spawn(async move {
+            let buffer = vec![0u8; initial_capacity_per_channel];
+            forward_messages(
+                client_identity,
+                self,
+                &mut output,
+                buffer,
+                max_buffer_size_per_channel,
+            )
+            .await
+        });
+
+        tokio::select! {
+            result = &mut publish_messages => {
+                forward_messages.abort();
+                result
+                    .map_err(PublishMessagesError::TaskError)
+                    .and_then(|x| x)
+                    .map_err(|e| ServePartyError(FirstOccurredError::Input(e)))
+            },
+            result = &mut forward_messages => {
+                publish_messages.abort();
+                result
+                    .map_err(ForwardMessagesError::TaskError)
+                    .and_then(|x| x)
+                    .map_err(|e| ServePartyError(FirstOccurredError::Output(e)))
+            },
+        }
+    }
 }
 
-pub struct RoomHistory {
+struct RoomHistory {
     headers: Vec<MessageHeader>,
     concated_messages: Vec<u8>,
 
@@ -176,7 +199,7 @@ async fn process_publishing_messages<I>(
     party_pk: PublicKey,
     room: Arc<Room>,
     mut input: ReceiveData<PublishMsg, I>,
-) -> Result<(), ProcessPublishingMessagesError>
+) -> Result<(), PublishMessagesError>
 where
     I: AsyncRead + Unpin,
 {
@@ -211,14 +234,14 @@ where
         let size_of_headers = history.headers.len() * size_of::<MessageHeader>();
 
         if size_of_concated_messages + size_of_headers > history.size_limit {
-            return Err(ProcessPublishingMessagesError::HistorySizeLimitExceeded);
+            return Err(PublishMessagesError::HistorySizeLimitExceeded);
         }
     }
 
     Ok(())
 }
 
-pub async fn forward_messages<O>(
+async fn forward_messages<O>(
     party_pk: PublicKey,
     room: Arc<Room>,
     output: &mut O,
@@ -292,7 +315,7 @@ where
 }
 
 #[derive(Debug, Error)]
-enum ProcessPublishingMessagesError {
+enum PublishMessagesError {
     #[error("receive publishing message")]
     Receive(
         #[source]
@@ -324,14 +347,29 @@ enum Bug {
     ReceivedReturnedNone,
 }
 
-pub enum ForwardMessagesError {
+#[derive(Error, Debug)]
+enum ForwardMessagesError {
+    #[error(
+        "message is too large to forward to the party: size={message_size} limit={buffer_size}"
+    )]
     MessageTooLarge {
         message_size: usize,
         buffer_size: usize,
     },
-    MessageSizeDoestFitToU16 {
-        message_size: usize,
-    },
-    SendMessage(io::Error),
-    TaskError(JoinError),
+    #[error("i/o error")]
+    SendMessage(#[source] io::Error),
+    #[error("green thread unexpectedly terminated")]
+    TaskError(#[source] JoinError),
+}
+
+#[derive(Error, Debug)]
+#[error(transparent)]
+pub struct ServePartyError(#[from] FirstOccurredError);
+
+#[derive(Error, Debug)]
+enum FirstOccurredError {
+    #[error("process message published by the party")]
+    Input(#[source] PublishMessagesError),
+    #[error("forward published message to the party")]
+    Output(#[source] ForwardMessagesError),
 }
