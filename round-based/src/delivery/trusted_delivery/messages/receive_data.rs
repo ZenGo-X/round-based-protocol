@@ -57,6 +57,16 @@ where
             Some((header, &self.data[..data_len]))
         }
     }
+
+    pub fn received_mut(&mut self) -> Option<(&mut M::Header, &mut [u8])> {
+        let header = self.header.as_mut()?;
+        let data_len = self.parser.data_size(header);
+        if self.data_received != data_len || !self.data_valid {
+            None
+        } else {
+            Some((header, &mut self.data[..data_len]))
+        }
+    }
 }
 
 impl<M, IO> Stream for ReceiveData<M, IO>

@@ -35,6 +35,7 @@ tokio-rustls = { version = "0.22", optional = true }
 sha2 = { version = "0.9", optional = true }
 secp256k1 = { version = "0.20", features = ["global-context"], optional = true }
 never = { version = "0.1", optional = true }
+generic-array = { version = "0.14", optional = true }
 
 # unstable features
 rcgen = { version = "0.8", optional = true }
@@ -53,7 +54,7 @@ hamcrest2 = "0.3"
 default = ["tls"]
 derive = ["round-based-derive"]
 tls = ["rustls", "webpki", "tokio-rustls"]
-trusted-delivery = ["tls", "secp256k1", "sha2", "never"]
+trusted-delivery = ["tls", "secp256k1", "sha2", "never", "generic-array"]
 unstable = ["rcgen"]
 
 [[example]]
