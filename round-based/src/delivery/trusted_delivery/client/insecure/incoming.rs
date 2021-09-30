@@ -28,12 +28,6 @@ pub enum ReceiveError {
     ),
     #[error("received invalid message")]
     InvalidMessage(#[source] InvalidMessage),
-    #[error("invalid sender identity")]
-    InvalidSenderIdentity(#[source] secp256k1::Error),
-    #[error("is_broadcast flag has incorrect value: {0}")]
-    InvalidIsBroadcast(u8),
-    #[error("message is incorrectly signed")]
-    InvalidSignature(#[source] secp256k1::Error),
     #[error("internal bug")]
     Bug(
         #[source]
