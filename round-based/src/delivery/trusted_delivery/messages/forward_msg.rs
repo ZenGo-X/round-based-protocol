@@ -1,6 +1,6 @@
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 
-use secp256k1::{PublicKey, Signature, SECP256K1};
+use secp256k1::{PublicKey, SecretKey, Signature, SECP256K1};
 use sha2::{Digest, Sha256};
 
 use thiserror::Error;
@@ -19,6 +19,23 @@ impl ForwardMsgHeader {
         + 1  // is_broadcast flag
         + 64 // Signature
         + 2; // Data len (u16)
+
+    pub fn new(sender_identity_key: &SecretKey, recipient: Option<&PublicKey>, msg: &[u8]) -> Self {
+        let message_hash = Sha256::new()
+            .chain(&[u8::from(recipient.is_none())])
+            .chain(recipient.map(PublicKey::serialize).unwrap_or([0u8; 33]))
+            .chain(msg)
+            .finalize();
+        let message_hash = secp256k1::Message::from_slice(&message_hash)
+            .expect("sha256 output is a valid secp256k1::Message");
+        let signature = SECP256K1.sign(&message_hash, sender_identity_key);
+        Self {
+            sender: PublicKey::from_secret_key(&SECP256K1, sender_identity_key),
+            is_broadcast: recipient.is_none(),
+            signature,
+            data_len: msg.len().try_into().unwrap(),
+        }
+    }
 
     pub fn verify(
         &self,
