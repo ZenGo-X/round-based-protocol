@@ -14,7 +14,7 @@ pub struct PublishMsgHeader {
 }
 
 impl PublishMsgHeader {
-    const SIZE: usize = 1 // is_broadcast flag
+    pub const SIZE: usize = 1 // is_broadcast flag
         + 33 // recipient identity (zeroes if it's broadcast msg)
         + 64 // signature
         + 2; // msg len (u16)

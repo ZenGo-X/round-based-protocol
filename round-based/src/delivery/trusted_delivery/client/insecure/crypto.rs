@@ -35,18 +35,23 @@ pub trait DecryptionKey {
 pub trait EncryptionKeys {
     type Key: EncryptionKey;
 
+    fn has_encryption_key(&self, recipient_identity: &PublicKey) -> bool;
     fn get_encryption_key(&mut self, recipient_identity: &PublicKey) -> Option<&mut Self::Key>;
 }
 
 pub trait DecryptionKeys {
     type Key: DecryptionKey;
 
+    fn has_decryption_key(&self, recipient_identity: &PublicKey) -> bool;
     fn get_decryption_key(&mut self, sender_identity: &PublicKey) -> Option<&mut Self::Key>;
 }
 
 impl<K: EncryptionKey> EncryptionKeys for HashMap<PublicKey, K> {
     type Key = K;
 
+    fn has_encryption_key(&self, recipient_identity: &PublicKey) -> bool {
+        self.contains_key(recipient_identity)
+    }
     fn get_encryption_key(&mut self, sender_identity: &PublicKey) -> Option<&mut Self::Key> {
         self.get_mut(sender_identity)
     }
@@ -55,6 +60,9 @@ impl<K: EncryptionKey> EncryptionKeys for HashMap<PublicKey, K> {
 impl<K: DecryptionKey> DecryptionKeys for HashMap<PublicKey, K> {
     type Key = K;
 
+    fn has_decryption_key(&self, recipient_identity: &PublicKey) -> bool {
+        self.contains_key(recipient_identity)
+    }
     fn get_decryption_key(&mut self, sender_identity: &PublicKey) -> Option<&mut Self::Key> {
         self.get_mut(sender_identity)
     }
@@ -66,6 +74,9 @@ pub struct NoEncryption;
 impl EncryptionKeys for NoEncryption {
     type Key = Never;
 
+    fn has_encryption_key(&self, _recipient_identity: &PublicKey) -> bool {
+        false
+    }
     fn get_encryption_key(&mut self, _recipient_identity: &PublicKey) -> Option<&mut Self::Key> {
         None
     }
@@ -77,6 +88,9 @@ pub struct NoDecryption;
 impl DecryptionKeys for NoDecryption {
     type Key = Never;
 
+    fn has_decryption_key(&self, _recipient_identity: &PublicKey) -> bool {
+        false
+    }
     fn get_decryption_key(&mut self, _sender_identity: &PublicKey) -> Option<&mut Self::Key> {
         None
     }
