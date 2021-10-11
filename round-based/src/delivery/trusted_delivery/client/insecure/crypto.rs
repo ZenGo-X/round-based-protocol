@@ -123,6 +123,7 @@ impl DecryptionKey for Never {
     }
 }
 
+#[cfg_attr(test, derive(Clone))]
 pub struct AesGcmEncryptionKey {
     counter: u64,
     key: Aes256Gcm,

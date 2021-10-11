@@ -177,7 +177,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use std::collections::HashMap;
     use std::iter;
 
@@ -241,12 +241,12 @@ mod tests {
             msg: body.to_vec(),
         }
     }
-    fn random_aes_key() -> AesKey {
+    pub fn random_aes_key() -> AesKey {
         let mut key = GenericArray::default();
         OsRng.fill_bytes(key.as_mut_slice());
         key
     }
-    fn generate_parties_sk(n: u16) -> (SortedIdentities, Vec<SecretKey>) {
+    pub fn generate_parties_sk(n: u16) -> (SortedIdentities, Vec<SecretKey>) {
         let generate_sk = || loop {
             let mut key = [0u8; 32];
             OsRng.fill_bytes(&mut key);

@@ -133,13 +133,16 @@ where
             ready!(Pin::new(&mut *this).poll_flush(cx))?;
             debug_assert!(this.filled_bytes == 0);
         }
+
         let (_filled, capacity) = this.buffer.split_at_mut(this.filled_bytes);
-        let (header, data) = capacity.split_at_mut(PublishMsgHeader::SIZE);
+        let (msg_bytes, _capacity) = capacity.split_at_mut(msg_size);
+        let (header, data) = msg_bytes.split_at_mut(PublishMsgHeader::SIZE);
+        let (data, tag) = data.split_at_mut(msg.serialized_plaintext_len.into());
+
+        bincode::serialize_into(&mut *data, &msg.msg.msg)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
         if msg.shall_be_encrypted {
-            let (data, tag) =
-                data.split_at_mut(data.len() - <K::Key as EncryptionKey>::TagSize::USIZE);
-            bincode::serialize_into(&mut *data, &msg.msg.msg)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
             let recipient = msg.recipient.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::Other,
@@ -159,13 +162,12 @@ where
                 .encrypt(&[], &mut *data)
                 .map_err(|_| io::Error::new(io::ErrorKind::Other, "cannot decrypt the message"))?;
             tag.copy_from_slice(tag_bytes.as_slice());
-        } else {
-            bincode::serialize_into(&mut *data, &msg.msg.msg)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         }
 
         let constructed_header = PublishMsgHeader::new(&this.identity_key, msg.recipient, data);
         header.copy_from_slice(&constructed_header.to_bytes());
+
+        this.filled_bytes += msg_size;
 
         Poll::Ready(Ok(()))
     }
@@ -216,5 +218,140 @@ impl<'msg, M> SendingMsg<'msg, M> {
             } else {
                 0
             }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::delivery::trusted_delivery::client::insecure::crypto::{
+        AesGcmEncryptionKey, EncryptionKey,
+    };
+    use crate::delivery::trusted_delivery::client::insecure::outgoing::Outgoings;
+    use crate::delivery::trusted_delivery::messages::{FixedSizeMsg, PublishMsgHeader};
+    use aes_gcm::Aes256Gcm;
+    use aes_gcm::NewAead;
+    use generic_array::GenericArray;
+    use proptest::prelude::*;
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+    use std::io::Cursor;
+    use std::iter::FromIterator;
+    use std::pin::Pin;
+
+    use crate::{DeliverOutgoingExt, Outgoing};
+
+    use super::super::incoming::tests::generate_parties_sk;
+
+    #[derive(Debug, Serialize, Deserialize)]
+    struct Message {
+        string_field: String,
+        integer: u128,
+    }
+
+    fn generate_aes_key() -> Aes256Gcm {
+        let mut key = GenericArray::default();
+        OsRng.fill_bytes(key.as_mut_slice());
+        Aes256Gcm::new(&key)
+    }
+
+    fn message() -> impl Strategy<Value = Outgoing<Message>> {
+        (1..=5u16, ".{1,100}", any::<u128>()).prop_map(|(recipient, string_field, integer)| {
+            Outgoing {
+                recipient: if recipient == 5 {
+                    None
+                } else {
+                    Some(recipient)
+                },
+                msg: Message {
+                    string_field,
+                    integer,
+                },
+            }
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn fuzz_outgoings(msgs in prop::collection::vec(message(), 1..1000)) {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(test_on_messages(msgs))?
+        }
+    }
+
+    #[tokio::test]
+    async fn special_case() {
+        test_on_messages(vec![Outgoing {
+            recipient: Some(3),
+            msg: Message {
+                string_field: " ".to_string(),
+                integer: 0,
+            },
+        }])
+        .await
+        .unwrap()
+    }
+
+    async fn test_on_messages(msgs: Vec<Outgoing<Message>>) -> Result<(), TestCaseError> {
+        let (pk, sk) = generate_parties_sk(5);
+        let mut ek = HashMap::from_iter([
+            (pk[3], AesGcmEncryptionKey::new(0, generate_aes_key())),
+            (pk[4], AesGcmEncryptionKey::new(0, generate_aes_key())),
+        ]);
+
+        let mut actual = vec![];
+        let mut expected = vec![];
+
+        let mut outgoing = Outgoings::new(
+            sk[0].clone(),
+            pk.clone(),
+            ek.clone(),
+            Cursor::new(&mut actual),
+        );
+        let mut outgoing = Pin::new(&mut outgoing);
+
+        for Outgoing { recipient, msg } in msgs {
+            let has_to_be_encrypted = recipient == Some(3) || recipient == Some(4);
+            let serialized_data = bincode::serialize(&msg).unwrap();
+            let msg_size = PublishMsgHeader::SIZE
+                + serialized_data.len()
+                + if has_to_be_encrypted { 16 } else { 0 };
+            let recipient_pk = recipient.map(|i| pk[usize::from(i)]);
+
+            let len = expected.len();
+            expected.resize(len + msg_size, 0);
+            let expected = &mut expected[len..];
+            expected[PublishMsgHeader::SIZE..PublishMsgHeader::SIZE + serialized_data.len()]
+                .copy_from_slice(&serialized_data);
+            if has_to_be_encrypted {
+                let recipient = recipient_pk.unwrap();
+                let ek_i = ek.get_mut(&recipient).unwrap();
+                let tag = ek_i
+                    .encrypt(
+                        &[],
+                        &mut expected[PublishMsgHeader::SIZE
+                            ..PublishMsgHeader::SIZE + serialized_data.len()],
+                    )
+                    .unwrap();
+                expected[PublishMsgHeader::SIZE + serialized_data.len()..]
+                    .copy_from_slice(tag.as_slice());
+            }
+            let header =
+                PublishMsgHeader::new(&sk[0], recipient_pk, &expected[PublishMsgHeader::SIZE..]);
+            let header = header.to_bytes();
+            expected[..PublishMsgHeader::SIZE].copy_from_slice(&header);
+
+            outgoing
+                .send(Outgoing {
+                    recipient,
+                    msg: &msg,
+                })
+                .await
+                .unwrap();
+        }
+
+        prop_assert_eq!(actual, expected);
+        Ok(())
     }
 }
