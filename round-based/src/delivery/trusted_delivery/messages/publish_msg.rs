@@ -19,7 +19,12 @@ impl PublishMsgHeader {
         + 64 // signature
         + 2; // msg len (u16)
 
-    pub fn new(identity_key: &SecretKey, recipient: Option<PublicKey>, msg: &[u8]) -> Self {
+    pub fn new(
+        identity_key: &SecretKey,
+        recipient: Option<PublicKey>,
+        msg: &[u8],
+        tag: &[u8],
+    ) -> Self {
         let message_hash = Sha256::new()
             .chain(&[u8::from(recipient.is_some())])
             .chain(
@@ -29,6 +34,7 @@ impl PublishMsgHeader {
                     .unwrap_or([0u8; 33]),
             )
             .chain(msg)
+            .chain(tag)
             .finalize();
         let message_hash = secp256k1::Message::from_slice(&message_hash)
             .expect("sha256 output is a valid secp256k1::Message");
@@ -36,7 +42,9 @@ impl PublishMsgHeader {
         Self {
             recipient,
             signature,
-            message_body_len: msg.len().try_into().expect("message len overflows u16"),
+            message_body_len: (msg.len() + tag.len())
+                .try_into()
+                .expect("message len overflows u16"),
         }
     }
 

@@ -164,7 +164,8 @@ where
             tag.copy_from_slice(tag_bytes.as_slice());
         }
 
-        let constructed_header = PublishMsgHeader::new(&this.identity_key, msg.recipient, data);
+        let constructed_header =
+            PublishMsgHeader::new(&this.identity_key, msg.recipient, data, tag);
         header.copy_from_slice(&constructed_header.to_bytes());
 
         this.filled_bytes += msg_size;
@@ -223,26 +224,28 @@ impl<'msg, M> SendingMsg<'msg, M> {
 
 #[cfg(test)]
 mod tests {
-    use crate::delivery::trusted_delivery::client::insecure::crypto::{
-        AesGcmEncryptionKey, EncryptionKey,
-    };
-    use crate::delivery::trusted_delivery::client::insecure::outgoing::Outgoings;
-    use crate::delivery::trusted_delivery::messages::{FixedSizeMsg, PublishMsgHeader};
-    use aes_gcm::Aes256Gcm;
-    use aes_gcm::NewAead;
-    use generic_array::GenericArray;
-    use proptest::prelude::*;
-    use rand::rngs::OsRng;
-    use rand::RngCore;
-    use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::io::Cursor;
     use std::iter::FromIterator;
     use std::pin::Pin;
 
+    use aes_gcm::Aes256Gcm;
+    use aes_gcm::NewAead;
+    use generic_array::GenericArray;
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+    use serde::{Deserialize, Serialize};
+
+    use proptest::prelude::*;
+
+    use crate::delivery::trusted_delivery::client::insecure::crypto::{
+        AesGcmEncryptionKey, EncryptionKey,
+    };
+    use crate::delivery::trusted_delivery::client::insecure::outgoing::Outgoings;
+    use crate::delivery::trusted_delivery::messages::{FixedSizeMsg, PublishMsgHeader};
     use crate::{DeliverOutgoingExt, Outgoing};
 
-    use super::super::incoming::tests::generate_parties_sk;
+    use crate::delivery::trusted_delivery::client::insecure::incoming::tests::generate_parties_sk;
 
     #[derive(Debug, Serialize, Deserialize)]
     struct Message {
@@ -278,19 +281,6 @@ mod tests {
             let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.block_on(test_on_messages(msgs))?
         }
-    }
-
-    #[tokio::test]
-    async fn special_case() {
-        test_on_messages(vec![Outgoing {
-            recipient: Some(4),
-            msg: Message {
-                string_field: " ".to_string(),
-                integer: 0,
-            },
-        }])
-        .await
-        .unwrap()
     }
 
     async fn test_on_messages(msgs: Vec<Outgoing<Message>>) -> Result<(), TestCaseError> {
@@ -337,8 +327,12 @@ mod tests {
                 expected[PublishMsgHeader::SIZE + serialized_data.len()..]
                     .copy_from_slice(tag.as_slice());
             }
-            let header =
-                PublishMsgHeader::new(&sk[0], recipient_pk, &expected[PublishMsgHeader::SIZE..]);
+            let header = PublishMsgHeader::new(
+                &sk[0],
+                recipient_pk,
+                &expected[PublishMsgHeader::SIZE..PublishMsgHeader::SIZE + serialized_data.len()],
+                &expected[PublishMsgHeader::SIZE + serialized_data.len()..],
+            );
             let header = header.to_bytes();
             expected[..PublishMsgHeader::SIZE].copy_from_slice(&header);
 
@@ -351,6 +345,8 @@ mod tests {
                 .unwrap();
         }
 
+        // println!("Actual  : {}", hex::encode(&actual));
+        // println!("Expected: {}", hex::encode(&expected));
         prop_assert_eq!(actual, expected);
         Ok(())
     }

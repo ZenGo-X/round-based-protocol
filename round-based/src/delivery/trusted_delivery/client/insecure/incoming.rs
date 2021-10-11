@@ -241,7 +241,7 @@ pub mod tests {
             msg: body.to_vec(),
         }
     }
-    pub fn random_aes_key() -> AesKey {
+    fn random_aes_key() -> AesKey {
         let mut key = GenericArray::default();
         OsRng.fill_bytes(key.as_mut_slice());
         key
