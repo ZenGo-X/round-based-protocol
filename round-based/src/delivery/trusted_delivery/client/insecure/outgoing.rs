@@ -283,7 +283,7 @@ mod tests {
     #[tokio::test]
     async fn special_case() {
         test_on_messages(vec![Outgoing {
-            recipient: Some(3),
+            recipient: Some(4),
             msg: Message {
                 string_field: " ".to_string(),
                 integer: 0,
