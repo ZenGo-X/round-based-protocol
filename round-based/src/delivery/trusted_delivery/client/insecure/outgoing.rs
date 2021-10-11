@@ -1,4 +1,5 @@
 use std::convert::TryInto;
+use std::io::Cursor;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -13,7 +14,7 @@ use crate::delivery::trusted_delivery::client::identity_resolver::IdentityResolv
 use crate::delivery::trusted_delivery::client::insecure::crypto::{EncryptionKey, EncryptionKeys};
 use crate::delivery::trusted_delivery::messages::{FixedSizeMsg, PublishMsgHeader};
 use crate::delivery::OutgoingChannel;
-use crate::{DeliverOutgoing, Outgoing};
+use crate::Outgoing;
 
 pub struct Outgoings<P, K, IO> {
     identity_key: SecretKey,
@@ -74,103 +75,105 @@ where
     }
 }
 
-impl<'msg, P, K, IO, M> DeliverOutgoing<'msg, &'msg M> for Outgoings<P, K, IO>
+impl<'msg, P, K, IO> Outgoings<P, K, IO>
 where
     P: IdentityResolver + Unpin,
     K: EncryptionKeys + Unpin,
     IO: AsyncWrite + Unpin,
-    M: Serialize,
 {
-    type Prepared = SendingMsg<'msg, M>;
+    pub fn message_size<M: Serialize>(&self, msg: Outgoing<&M>) -> io::Result<MessageSize> {
+        let recipient = self.lookup_recipient_pk(msg.recipient)?;
+        let shall_be_encrypted = recipient
+            .map(|pk_i| self.encryption_keys.has_encryption_key(&pk_i))
+            .unwrap_or(false);
+        let serialized_msg_size: usize = bincode::serialized_size(msg.msg)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "message too long"))?;
+        Ok(MessageSize(
+            PublishMsgHeader::SIZE
+                + serialized_msg_size
+                + if shall_be_encrypted {
+                    <K::Key as EncryptionKey>::TagSize::USIZE
+                } else {
+                    0
+                },
+        ))
+    }
+    pub fn poll_ready(&mut self, cx: &mut Context, msg_size: MessageSize) -> Poll<io::Result<()>> {
+        if msg_size.0 > self.buffer_limit {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "message too long: len={}, limit={}",
+                    msg_size.0, self.buffer_limit
+                ),
+            )));
+        }
+        if msg_size.0 > self.buffer.len() {
+            self.buffer.resize(msg_size.0, 0)
+        }
+        if msg_size.0 > self.buffer.len() - self.filled_bytes {
+            // Not enough capacity - need to drain the buffer
+            ready!(Pin::new(&mut *self).poll_flush(cx))?;
+            debug_assert!(self.filled_bytes == 0);
+        }
+        Poll::Ready(Ok(()))
+    }
+    pub fn start_send<M>(&mut self, msg: Outgoing<&M>) -> io::Result<()>
+    where
+        M: Serialize,
+    {
+        let recipient = self.lookup_recipient_pk(msg.recipient)?;
 
-    fn prepare(self: Pin<&Self>, msg: Outgoing<&'msg M>) -> Result<Self::Prepared, Self::Error> {
-        let recipient = match msg.recipient {
+        let (_filled, capacity) = self.buffer.split_at_mut(self.filled_bytes);
+        let (header, capacity) = capacity.split_at_mut(PublishMsgHeader::SIZE);
+
+        let mut writer = Cursor::new(&mut *capacity);
+        bincode::serialize_into(&mut writer, &msg.msg)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let msg_len: usize = writer.position().try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "cannot convert cursor position to usize",
+            )
+        })?;
+        let (data, capacity) = capacity.split_at_mut(msg_len);
+
+        let constructed_header = if let Some(recipient) = recipient {
+            if let Some(ek) = self.encryption_keys.get_encryption_key(&recipient) {
+                let (tag, _capacity) =
+                    capacity.split_at_mut(<K::Key as EncryptionKey>::TagSize::USIZE);
+                let tag_bytes = ek.encrypt(&[], data).map_err(|_| {
+                    io::Error::new(io::ErrorKind::Other, "cannot encrypt the message")
+                })?;
+                tag.copy_from_slice(tag_bytes.as_slice());
+                PublishMsgHeader::new(&self.identity_key, Some(recipient), data, tag)
+            } else {
+                PublishMsgHeader::new(&self.identity_key, Some(recipient), data, &[])
+            }
+        } else {
+            PublishMsgHeader::new(&self.identity_key, recipient, data, &[])
+        };
+
+        header.copy_from_slice(&constructed_header.to_bytes());
+        self.filled_bytes +=
+            PublishMsgHeader::SIZE + usize::from(constructed_header.message_body_len);
+
+        Ok(())
+    }
+
+    fn lookup_recipient_pk(&self, recipient_index: Option<u16>) -> io::Result<Option<PublicKey>> {
+        match recipient_index {
             Some(i) => {
                 let identity = self.parties.lookup_party_identity(i).ok_or(io::Error::new(
                     io::ErrorKind::NotFound,
                     format!("unknown recipient #{}", i),
                 ))?;
-                Some(identity)
+                Ok(Some(*identity))
             }
-            None => None,
-        };
-        let shall_be_encrypted = recipient
-            .map(|pk_i| self.encryption_keys.has_encryption_key(pk_i))
-            .unwrap_or(false);
-        let msg_size: u16 = bincode::serialized_size(msg.msg)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
-            .try_into()
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "message too long"))?;
-        Ok(SendingMsg {
-            msg,
-            shall_be_encrypted,
-            recipient: recipient.copied(),
-            serialized_plaintext_len: msg_size,
-        })
-    }
-
-    fn poll_start_send(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context,
-        msg: &mut Self::Prepared,
-    ) -> Poll<Result<(), Self::Error>> {
-        let this = &mut *self;
-        let msg_size = msg.serialized_size::<K::Key>();
-        if msg_size > this.buffer_limit {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "message too long: len={}, limit={}",
-                    msg_size, this.buffer_limit
-                ),
-            )));
+            None => Ok(None),
         }
-        if msg_size > this.buffer.len() {
-            this.buffer.resize(msg_size, 0)
-        }
-        if msg_size > this.buffer.len() - this.filled_bytes {
-            // Not enough capacity - need to drain the buffer
-            ready!(Pin::new(&mut *this).poll_flush(cx))?;
-            debug_assert!(this.filled_bytes == 0);
-        }
-
-        let (_filled, capacity) = this.buffer.split_at_mut(this.filled_bytes);
-        let (msg_bytes, _capacity) = capacity.split_at_mut(msg_size);
-        let (header, data) = msg_bytes.split_at_mut(PublishMsgHeader::SIZE);
-        let (data, tag) = data.split_at_mut(msg.serialized_plaintext_len.into());
-
-        bincode::serialize_into(&mut *data, &msg.msg.msg)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        if msg.shall_be_encrypted {
-            let recipient = msg.recipient.ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    "bug: recipient must be specified (see prepare method)",
-                )
-            })?;
-            let encryption_key = this
-                .encryption_keys
-                .get_encryption_key(&recipient)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::Other,
-                        "bug: recipient enc key not found (see prepare method)",
-                    )
-                })?;
-            let tag_bytes = encryption_key
-                .encrypt(&[], &mut *data)
-                .map_err(|_| io::Error::new(io::ErrorKind::Other, "cannot decrypt the message"))?;
-            tag.copy_from_slice(tag_bytes.as_slice());
-        }
-
-        let constructed_header =
-            PublishMsgHeader::new(&this.identity_key, msg.recipient, data, tag);
-        header.copy_from_slice(&constructed_header.to_bytes());
-
-        this.filled_bytes += msg_size;
-
-        Poll::Ready(Ok(()))
     }
 }
 
@@ -222,6 +225,9 @@ impl<'msg, M> SendingMsg<'msg, M> {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct MessageSize(usize);
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -243,9 +249,10 @@ mod tests {
     };
     use crate::delivery::trusted_delivery::client::insecure::outgoing::Outgoings;
     use crate::delivery::trusted_delivery::messages::{FixedSizeMsg, PublishMsgHeader};
-    use crate::{DeliverOutgoingExt, Outgoing};
+    use crate::Outgoing;
 
     use crate::delivery::trusted_delivery::client::insecure::incoming::tests::generate_parties_sk;
+    use crate::delivery::OutgoingChannel;
 
     #[derive(Debug, Serialize, Deserialize)]
     struct Message {
@@ -336,14 +343,23 @@ mod tests {
             let header = header.to_bytes();
             expected[..PublishMsgHeader::SIZE].copy_from_slice(&header);
 
-            outgoing
-                .send(Outgoing {
-                    recipient,
-                    msg: &msg,
-                })
+            let msg = Outgoing {
+                recipient,
+                msg: &msg,
+            };
+            let message_size = outgoing.message_size(msg).unwrap();
+            futures::future::poll_fn(|cx| outgoing.poll_ready(cx, message_size))
                 .await
                 .unwrap();
+            let old_position = outgoing.filled_bytes;
+            outgoing.start_send(msg).unwrap();
+            let new_position = outgoing.filled_bytes;
+            prop_assert_eq!(message_size.0, new_position - old_position)
         }
+
+        futures::future::poll_fn(move |cx| outgoing.as_mut().poll_flush(cx))
+            .await
+            .unwrap();
 
         // println!("Actual  : {}", hex::encode(&actual));
         // println!("Expected: {}", hex::encode(&expected));

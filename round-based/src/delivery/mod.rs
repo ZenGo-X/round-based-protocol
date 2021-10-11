@@ -104,7 +104,7 @@ pub struct Incoming<M> {
 ///
 /// Contains a message that local party needs to send, and index of recipient party (`None` if it's
 /// broadcast message)
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Outgoing<M> {
     /// Index of recipient
     ///
