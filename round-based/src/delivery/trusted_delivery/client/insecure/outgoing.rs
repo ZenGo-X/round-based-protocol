@@ -251,7 +251,7 @@ mod tests {
     use crate::delivery::trusted_delivery::messages::{FixedSizeMsg, PublishMsgHeader};
     use crate::Outgoing;
 
-    use crate::delivery::trusted_delivery::client::insecure::incoming::tests::generate_parties_sk;
+    use crate::delivery::trusted_delivery::client::insecure::incoming::incomings_tests::generate_parties_sk;
     use crate::delivery::OutgoingChannel;
 
     #[derive(Debug, Serialize, Deserialize)]

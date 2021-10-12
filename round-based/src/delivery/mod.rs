@@ -92,7 +92,7 @@ pub trait DeliverOutgoing<'m, M: 'm>: OutgoingChannel {
 /// Incoming message
 ///
 /// Contains a received message and index of party who sent the message
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Incoming<M> {
     /// Index of a party who sent the message
     pub sender: u16,

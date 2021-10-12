@@ -23,8 +23,7 @@ pub struct ReceiveData<M: DataMsg, IO> {
 
 impl<M, IO> ReceiveData<M, IO>
 where
-    M: DataMsg + Unpin,
-    IO: AsyncRead + Unpin,
+    M: DataMsg,
 {
     pub fn new(channel: IO, parser: M) -> Self {
         Self::with_capacity(channel, parser, 1000)
