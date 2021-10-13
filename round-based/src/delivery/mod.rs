@@ -100,6 +100,25 @@ pub struct Incoming<M> {
     pub msg: M,
 }
 
+// impl<M> Incoming<M> {
+//     pub fn map<M2, F>(self, f: F) -> Incoming<M2>
+//     where
+//         F: FnOnce(M) -> M2,
+//     {
+//         Incoming {
+//             sender: self.sender,
+//             msg: f(self.msg),
+//         }
+//     }
+//
+//     pub fn as_ref(&self) -> Incoming<&M> {
+//         Incoming {
+//             sender: self.sender,
+//             msg: &self.msg,
+//         }
+//     }
+// }
+
 /// Outgoing message
 ///
 /// Contains a message that local party needs to send, and index of recipient party (`None` if it's
@@ -112,6 +131,15 @@ pub struct Outgoing<M> {
     pub recipient: Option<u16>,
     /// Message being sent
     pub msg: M,
+}
+
+impl<M> Outgoing<M> {
+    pub fn as_ref(&self) -> Outgoing<&M> {
+        Outgoing {
+            recipient: self.recipient,
+            msg: &self.msg,
+        }
+    }
 }
 
 /// An extension trait for [DeliverOutgoing] that provides a variety of convenient functions

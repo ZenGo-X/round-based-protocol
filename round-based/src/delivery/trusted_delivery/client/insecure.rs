@@ -2,6 +2,7 @@ mod acceptor;
 mod crypto;
 mod incoming;
 mod outgoing;
+mod p2p_handshake;
 
 // pub struct OutgoingDelivery<P, IO> {
 //     channel: io::WriteHalf<TlsStream<IO>>,

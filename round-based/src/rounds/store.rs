@@ -1,5 +1,7 @@
 use std::iter;
 
+use thiserror::Error;
+
 use crate::delivery::Incoming;
 use crate::rounds::MessagesStore;
 
@@ -105,21 +107,20 @@ impl<M> RoundMsgs<M> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Error)]
 #[non_exhaustive]
 pub enum RoundInputError {
-    AttemptToOverwriteReceivedMsg {
-        sender: u16,
-    },
-    SenderIndexOutOfRange {
-        sender: u16,
-        n: u16,
-    },
+    #[error("party {sender} attempts to overwrite already received message")]
+    AttemptToOverwriteReceivedMsg { sender: u16 },
+    #[error("sender index is out of range: sender={sender}, n={n}")]
+    SenderIndexOutOfRange { sender: u16, n: u16 },
+    #[error("not enough messages to finish the round: waiting messages from parties {parties_who_didnt_send_messages:?}")]
     NotEnoughMessages {
         number_of_received_msgs: u16,
         received_own_message: bool,
         parties_who_didnt_send_messages: Vec<u16>,
     },
+    #[error("received message sent by this party, but message doesn't match what it sent")]
     MismatchedLocalMsg,
 }
 

@@ -245,7 +245,7 @@ where
     for<'r> &'r I: StreamRef<'r, ItemRef = Incoming<&'r [u8]>>,
     F: FnMut(&MalformedMessage) -> Decision + Unpin,
 {
-    type Item = Result<M, ReceiveError>;
+    type Item = Result<Incoming<M>, ReceiveError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         let this = &mut *self;
@@ -262,7 +262,12 @@ where
                         }
                     });
                     match parse_result {
-                        Ok(m) => return Poll::Ready(Some(Ok(m))),
+                        Ok(m) => {
+                            return Poll::Ready(Some(Ok(Incoming {
+                                sender: msg.sender,
+                                msg: m,
+                            })))
+                        }
                         Err(e) => match (this.handle_error)(&e) {
                             Decision::Continue => continue,
                             Decision::Abort => return Poll::Ready(Some(Err(e.into()))),
@@ -517,11 +522,11 @@ mod receive_and_parse_tests {
     use crate::Incoming;
 
     pub struct TestStreamRef<'r> {
-        item: Option<&'r Vec<u8>>,
-        iter: std::slice::Iter<'r, Vec<u8>>,
+        item: Option<&'r Incoming<Vec<u8>>>,
+        iter: std::slice::Iter<'r, Incoming<Vec<u8>>>,
     }
     impl<'r> TestStreamRef<'r> {
-        pub fn new(iter: std::slice::Iter<'r, Vec<u8>>) -> Self {
+        pub fn new(iter: std::slice::Iter<'r, Incoming<Vec<u8>>>) -> Self {
             Self { item: None, iter }
         }
     }
@@ -539,9 +544,9 @@ mod receive_and_parse_tests {
     impl<'r, 's> StreamRef<'r> for &'r TestStreamRef<'s> {
         type ItemRef = Incoming<&'r [u8]>;
         fn received(&'r self) -> Option<Self::ItemRef> {
-            self.item.map(|b| Incoming {
-                sender: 2,
-                msg: b.as_slice(),
+            self.item.map(|m| Incoming {
+                sender: m.sender,
+                msg: m.msg.as_slice(),
             })
         }
     }
@@ -554,18 +559,22 @@ mod receive_and_parse_tests {
         large_int: u128,
     }
 
-    fn message() -> impl Strategy<Value = Message> {
+    fn message() -> impl Strategy<Value = Incoming<Message>> {
         (
+            0u16..=10,
             any::<u16>(),
             prop::collection::vec(any::<u8>(), 10..=100),
             ".{10,100}",
             any::<u128>(),
         )
-            .prop_map(|(small_int, bytes, string, large_int)| Message {
-                small_int,
-                bytes,
-                string,
-                large_int,
+            .prop_map(|(sender, small_int, bytes, string, large_int)| Incoming {
+                sender,
+                msg: Message {
+                    small_int,
+                    bytes,
+                    string,
+                    large_int,
+                },
             })
     }
 
@@ -577,11 +586,16 @@ mod receive_and_parse_tests {
         }
     }
 
-    async fn test_on_messages(msgs: Vec<Message>) -> Result<(), TestCaseError> {
+    async fn test_on_messages(msgs: Vec<Incoming<Message>>) -> Result<(), TestCaseError> {
         let serialized = msgs
             .iter()
-            .map(bincode::serialize)
-            .collect::<Result<Vec<_>, _>>()
+            .map(|msg| {
+                Ok(Incoming {
+                    sender: msg.sender,
+                    msg: bincode::serialize(&msg.msg)?,
+                })
+            })
+            .collect::<Result<Vec<_>, bincode::Error>>()
             .unwrap();
         let stream = TestStreamRef::new(serialized.iter());
         let receive = ReceiveAndParse::<Message, _>::new(stream);
