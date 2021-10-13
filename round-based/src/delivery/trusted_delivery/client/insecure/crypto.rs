@@ -9,6 +9,17 @@ use secp256k1::PublicKey;
 
 use aes_gcm::{AeadInPlace, Aes256Gcm};
 
+pub mod aead;
+
+pub trait EncryptionScheme {
+    type Key: AsMut<[u8]> + Default;
+    type EncryptionKey: EncryptionKey;
+    type DecryptionKey: DecryptionKey<TagSize = <Self::EncryptionKey as EncryptionKey>::TagSize>;
+
+    fn encryption_key(key: &Self::Key) -> Self::EncryptionKey;
+    fn decryption_key(key: &Self::Key) -> Self::DecryptionKey;
+}
+
 pub trait EncryptionKey {
     type TagSize: ArrayLength<u8>;
     type Error;
