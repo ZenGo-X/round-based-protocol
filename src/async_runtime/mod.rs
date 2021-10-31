@@ -47,7 +47,7 @@ pub mod watcher;
 /// ```
 ///
 /// Note that if the protocol has some cryptographical assumptions on transport channel (e.g. messages
-/// should be ecrypted, authenticated), then stream and sink must meet these assumptions (e.g. encrypt,
+/// should be encrypted, authenticated), then stream and sink must meet these assumptions (e.g. encrypt,
 /// authenticate messages)
 pub struct AsyncProtocol<SM, I, O, W = BlindWatcher> {
     state: Option<SM>,
