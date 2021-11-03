@@ -15,7 +15,7 @@ pub use benchmark::{BenchmarkResults, Measurements};
 ///
 /// Compared to [AsyncSimulation](super::AsyncSimulation), it's lightweight (doesn't require
 /// async runtime), and, more importantly, executes everything in straight order (sequently, without
-/// any parallelism). It makes this sumaltion more useful for writing benchmarks that detect
+/// any parallelism). It makes this simulation more useful for writing benchmarks that detect
 /// performance regression.
 ///
 /// ## Limitations
