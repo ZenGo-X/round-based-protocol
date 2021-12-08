@@ -8,7 +8,7 @@ use round_based::rounds::{
     ReceiveError, Rounds,
 };
 use round_based::simulation::Simulation;
-use round_based::{DeliverOutgoingExt, Delivery, Mpc, MpcParty, Outgoing, ProtocolMessage};
+use round_based::{Delivery, Mpc, MpcParty, Outgoing, OutgoingDeliveryExt, ProtocolMessage};
 
 #[derive(Clone, Debug, PartialEq, ProtocolMessage)]
 pub enum Msg {

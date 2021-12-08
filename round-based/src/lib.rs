@@ -8,7 +8,7 @@ pub mod simulation;
 
 #[doc(hidden)]
 pub use self::{
-    delivery::{DeliverOutgoing, DeliverOutgoingExt, Delivery, Incoming, Outgoing},
+    delivery::{Delivery, Incoming, Outgoing, OutgoingDelivery, OutgoingDeliveryExt},
     party::{Mpc, MpcParty},
     rounds::{ProtocolMessage, RoundMessage},
 };

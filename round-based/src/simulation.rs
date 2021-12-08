@@ -5,7 +5,7 @@ use futures::{ready, Stream};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
-use crate::delivery::{DeliverOutgoing, Delivery, Incoming, Outgoing, OutgoingChannel};
+use crate::delivery::{Delivery, Incoming, Outgoing, OutgoingChannel, OutgoingDelivery};
 use crate::rounds::ProtocolMessage;
 use crate::MpcParty;
 
@@ -119,30 +119,37 @@ impl<M> OutgoingChannel for SimulationOutgoing<M> {
     }
 }
 
-impl<'m, M> DeliverOutgoing<'m, &'m M> for SimulationOutgoing<M>
+impl<M> OutgoingDelivery<M> for SimulationOutgoing<M>
 where
-    M: Clone + Unpin,
+    M: Clone,
 {
-    type Prepared = Outgoing<Incoming<M>>;
+    type MessageSize = OneMessage;
 
-    fn prepare(self: Pin<&Self>, msg: Outgoing<&'m M>) -> Result<Self::Prepared, Self::Error> {
-        Ok(Outgoing {
-            recipient: msg.recipient,
-            msg: Incoming {
-                sender: self.local_party_idx,
-                msg: msg.msg.clone(),
-            },
-        })
+    fn message_size(
+        self: Pin<&Self>,
+        _msg: Outgoing<&M>,
+    ) -> Result<Self::MessageSize, Self::Error> {
+        Ok(OneMessage(()))
     }
 
-    fn poll_start_send(
+    fn poll_ready(
         self: Pin<&mut Self>,
-        _cx: &mut Context,
-        msg: &mut Self::Prepared,
+        _cx: &mut Context<'_>,
+        _msg_size: &Self::MessageSize,
     ) -> Poll<Result<(), Self::Error>> {
-        self.sender
-            .send(msg.clone())
-            .map_err(|_| broadcast::error::SendError(()))?;
         Poll::Ready(Ok(()))
     }
+
+    fn start_send(self: Pin<&mut Self>, msg: Outgoing<&M>) -> Result<(), Self::Error> {
+        self.sender
+            .send(msg.map(|m| Incoming {
+                sender: self.local_party_idx,
+                msg: m.clone(),
+            }))
+            .map_err(|_| broadcast::error::SendError(()))?;
+        Ok(())
+    }
 }
+
+/// Size of single message being transferred over simulated channel
+pub struct OneMessage(());

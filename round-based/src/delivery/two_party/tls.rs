@@ -285,7 +285,7 @@ mod tests {
     use tokio::task::{spawn_local, LocalSet};
 
     use crate::delivery::utils::tls::mock::MockTls;
-    use crate::{DeliverOutgoingExt, Delivery, Incoming, Outgoing};
+    use crate::{Delivery, Incoming, Outgoing, OutgoingDeliveryExt};
 
     use super::*;
     use crate::delivery::OutgoingChannelExt;

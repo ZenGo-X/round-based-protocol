@@ -18,19 +18,16 @@ use std::task::{Context, Poll};
 
 use futures::{ready, Stream};
 
-#[cfg(feature = "trusted-delivery")]
-#[cfg_attr(docsrs, doc(cfg(feature = "trusted-delivery")))]
-pub mod trusted_delivery;
+// #[cfg(feature = "trusted-delivery")]
+// #[cfg_attr(docsrs, doc(cfg(feature = "trusted-delivery")))]
+// pub mod trusted_delivery;
 pub mod two_party;
 pub mod utils;
 
 /// A pair of incoming and outgoing delivery channels
-pub trait Delivery<M, R = M>
-where
-    R: ?Sized,
-{
+pub trait Delivery<M> {
     /// Outgoing delivery channel
-    type Send: for<'m> DeliverOutgoing<'m, &'m R> + Send + Unpin;
+    type Send: OutgoingDelivery<M> + Send + Unpin;
     /// Incoming delivery channel
     type Receive: Stream<Item = Result<Incoming<M>, Self::ReceiveError>> + Send + Unpin + 'static;
     /// Error of incoming delivery channel
@@ -67,26 +64,34 @@ pub trait OutgoingChannel {
 ///
 /// [send_all]: DeliverOutgoingExt::send_all
 /// [shutdown]: DeliverOutgoingExt::shutdown
-pub trait DeliverOutgoing<'m, M: 'm>: OutgoingChannel {
-    /// Message prepared to be sent
-    type Prepared: Unpin + 'm;
+pub trait OutgoingDelivery<M>: OutgoingChannel {
+    /// Size of the message
+    type MessageSize: Unpin;
 
-    //TODO: open issue - prepare should return `Self::Prepared<'m>`, it must be updated once GATs
-    // are stabilized
-    /// Prepares the message to be sent
+    /// Returns size of the message that's required by [`poll_start_send`](Self::poll_start_send)
     ///
-    /// Performs one-time calculation on sending message. For instance, it can estimate size of
-    /// serialized message to know how much space it needs to claim in a socket buffer.
-    fn prepare(self: Pin<&Self>, msg: Outgoing<M>) -> Result<Self::Prepared, Self::Error>;
+    /// The method returns a error if message size cannot be evaluated
+    fn message_size(self: Pin<&Self>, msg: Outgoing<&M>) -> Result<Self::MessageSize, Self::Error>;
+
+    /// Attempts to prepare channel for sending a message of given `msg_size`
+    ///
+    /// Once it returned `Poll::Ready(Ok(()))`, you can call [`start_send`](Self::start_send) with
+    /// message of given size. Note that in order to actually send the message, you need to flush
+    /// the channel via [poll_flush](Self::poll_flush).
+    ///
+    /// If this method results in error, it typically means that the message of that size cannot be
+    /// sent.
+    fn poll_ready(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        msg_size: &Self::MessageSize,
+    ) -> Poll<Result<(), Self::Error>>;
+
     /// Queues sending the message
     ///
-    /// Once it returned `Poll::Ready(Ok(()))`, the message is queued. In order to actually send the
-    /// message, you need to flush it via [poll_flush](Self::poll_flush).
-    fn poll_start_send(
-        self: Pin<&mut Self>,
-        cx: &mut Context,
-        msg: &mut Self::Prepared,
-    ) -> Poll<Result<(), Self::Error>>;
+    /// Before calling this method, you need to ensure that channel is ready to process it by
+    /// calling [`poll_ready`](Self::poll_ready), otherwise it returns error.
+    fn start_send(self: Pin<&mut Self>, msg: Outgoing<&M>) -> Result<(), Self::Error>;
 }
 
 /// Incoming message
@@ -140,10 +145,20 @@ impl<M> Outgoing<M> {
             msg: &self.msg,
         }
     }
+
+    pub fn map<M2, F>(self, f: F) -> Outgoing<M2>
+    where
+        F: FnOnce(M) -> M2,
+    {
+        Outgoing {
+            recipient: self.recipient,
+            msg: f(self.msg),
+        }
+    }
 }
 
 /// An extension trait for [DeliverOutgoing] that provides a variety of convenient functions
-pub trait DeliverOutgoingExt<'m, M: 'm>: DeliverOutgoing<'m, M> {
+pub trait OutgoingDeliveryExt<M>: OutgoingDelivery<M> {
     /// Sends a sequence of messages
     ///
     /// Method signature is similar to:
@@ -157,18 +172,18 @@ pub trait DeliverOutgoingExt<'m, M: 'm>: DeliverOutgoing<'m, M> {
     /// ```rust,no_run
     /// # async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let mut outgoing: round_based::simulation::SimulationOutgoing<&'static str> = unimplemented!();
-    /// use round_based::{DeliverOutgoingExt, Outgoing};
+    /// use round_based::{OutgoingDeliveryExt, Outgoing};
     /// let msgs = vec!["Hello", "Goodbye"];
     /// outgoing.send_all(msgs.iter().map(|msg| Outgoing{ recipient: Some(1), msg })).await?;
     /// # Ok(()) }
     /// ```
-    fn send_all<'d, I>(&'d mut self, messages: I) -> SendAll<'d, 'm, M, Self, I::IntoIter>
+    fn send_all<'m, I>(&mut self, messages: I) -> SendAll<'_, 'm, M, Self, I::IntoIter>
     where
         Self: Unpin,
-        I: IntoIterator<Item = Outgoing<M>>,
+        I: IntoIterator<Item = Outgoing<&'m M>>,
         I::IntoIter: Unpin,
     {
-        SendAll::new(self, messages.into_iter())
+        SendAll::<M, Self, I::IntoIter>::new(self, messages.into_iter())
     }
 
     /// Sends one message
@@ -184,17 +199,16 @@ pub trait DeliverOutgoingExt<'m, M: 'm>: DeliverOutgoing<'m, M> {
     /// ```rust,no_run
     /// # async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let mut outgoing: round_based::simulation::SimulationOutgoing<&'static str> = unimplemented!();
-    /// use round_based::{DeliverOutgoingExt, Outgoing};
+    /// use round_based::{OutgoingDeliveryExt, Outgoing};
     /// outgoing.send(Outgoing{ recipient: Some(1), msg: &"Ping" }).await?;
     /// # Ok(()) }
     /// ```
-    fn send<'d>(
-        &'d mut self,
-        message: Outgoing<M>,
-    ) -> SendAll<'d, 'm, M, Self, iter::Once<Outgoing<M>>>
+    fn send<'m>(
+        &mut self,
+        message: Outgoing<&'m M>,
+    ) -> SendAll<'_, 'm, M, Self, iter::Once<Outgoing<&'m M>>>
     where
         Self: Unpin,
-        M: Unpin,
     {
         self.send_all(iter::once(message))
     }
@@ -218,26 +232,24 @@ pub trait OutgoingChannelExt: OutgoingChannel {
     }
 }
 
-impl<'m, M: 'm, D> DeliverOutgoingExt<'m, M> for D where D: DeliverOutgoing<'m, M> {}
+impl<M, D> OutgoingDeliveryExt<M> for D where D: OutgoingDelivery<M> {}
 impl<D> OutgoingChannelExt for D where D: OutgoingChannel {}
 
 /// A future for [`send_all`](DeliverOutgoingExt::send_all) method
 pub struct SendAll<'d, 'm, M, D, I>
 where
-    I: Iterator<Item = Outgoing<M>>,
-    D: DeliverOutgoing<'m, M> + ?Sized,
-    // M: 'm,
+    I: Iterator<Item = Outgoing<&'m M>>,
+    D: OutgoingDelivery<M> + ?Sized,
 {
     delivery: &'d mut D,
     messages: iter::Fuse<I>,
-    next_message: Option<D::Prepared>,
+    next_message: Option<(Outgoing<&'m M>, D::MessageSize)>,
 }
 
 impl<'d, 'm, M, D, I> SendAll<'d, 'm, M, D, I>
 where
-    I: Iterator<Item = Outgoing<M>> + Unpin,
-    D: DeliverOutgoing<'m, M> + Unpin + ?Sized,
-    D::Prepared: Unpin,
+    I: Iterator<Item = Outgoing<&'m M>> + Unpin,
+    D: OutgoingDelivery<M> + Unpin + ?Sized,
 {
     fn new(delivery: &'d mut D, messages: I) -> Self {
         Self {
@@ -250,13 +262,15 @@ where
     fn try_start_send(
         &mut self,
         cx: &mut Context,
-        mut msg: D::Prepared,
+        msg: Outgoing<&'m M>,
+        msg_size: D::MessageSize,
     ) -> Poll<Result<(), D::Error>> {
-        match Pin::new(&mut *self.delivery).poll_start_send(cx, &mut msg) {
+        match Pin::new(&mut *self.delivery).poll_ready(cx, &msg_size) {
             Poll::Pending => {
-                self.next_message = Some(msg);
+                self.next_message = Some((msg, msg_size));
                 Poll::Pending
             }
+            Poll::Ready(Ok(())) => Poll::Ready(Pin::new(&mut *self.delivery).start_send(msg)),
             result => result,
         }
     }
@@ -264,23 +278,22 @@ where
 
 impl<'d, 'm, M, D, I> Future for SendAll<'d, 'm, M, D, I>
 where
-    I: Iterator<Item = Outgoing<M>> + Unpin,
-    D: DeliverOutgoing<'m, M> + Unpin + ?Sized,
-    D::Prepared: Unpin,
+    I: Iterator<Item = Outgoing<&'m M>> + Unpin,
+    D: OutgoingDelivery<M> + Unpin + ?Sized,
 {
     type Output = Result<(), D::Error>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        if let Some(msg_to_send) = self.next_message.take() {
+        if let Some((msg, msg_size)) = self.next_message.take() {
             // We have buffered message, need to send it first
-            ready!(self.try_start_send(cx, msg_to_send))?
+            ready!(self.try_start_send(cx, msg, msg_size))?
         }
 
         loop {
             match self.messages.next() {
                 Some(msg) => {
-                    let msg = Pin::new(&*self.delivery).prepare(msg)?;
-                    ready!(self.try_start_send(cx, msg))?
+                    let msg_size = Pin::new(&*self.delivery).message_size(msg)?;
+                    ready!(self.try_start_send(cx, msg, msg_size))?
                 }
                 None => {
                     ready!(Pin::new(&mut *self.delivery).poll_flush(cx))?;

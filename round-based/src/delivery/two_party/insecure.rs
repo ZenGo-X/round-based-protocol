@@ -245,7 +245,7 @@ mod tests {
 
     use serde::{Deserialize, Serialize};
 
-    use crate::delivery::{DeliverOutgoingExt, Delivery, Incoming, Outgoing};
+    use crate::delivery::{Delivery, Incoming, Outgoing, OutgoingDeliveryExt};
 
     use super::{ClientBuilder, Server};
 

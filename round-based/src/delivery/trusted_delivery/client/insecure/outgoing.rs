@@ -14,7 +14,7 @@ use crate::delivery::trusted_delivery::client::identity_resolver::IdentityResolv
 use crate::delivery::trusted_delivery::client::insecure::crypto::{EncryptionKey, EncryptionKeys};
 use crate::delivery::trusted_delivery::messages::{FixedSizeMsg, PublishMsgHeader};
 use crate::delivery::OutgoingChannel;
-use crate::Outgoing;
+use crate::{Outgoing, OutgoingDelivery};
 
 pub struct Outgoings<P, K, IO> {
     identity_key: SecretKey,
@@ -75,13 +75,16 @@ where
     }
 }
 
-impl<'msg, P, K, IO> Outgoings<P, K, IO>
+impl<'msg, P, K, IO, M> OutgoingDelivery<M> for Outgoings<P, K, IO>
 where
+    M: Serialize,
     P: IdentityResolver + Unpin,
     K: EncryptionKeys + Unpin,
     IO: AsyncWrite + Unpin,
 {
-    pub fn message_size<M: Serialize>(&self, msg: Outgoing<&M>) -> io::Result<MessageSize> {
+    type MessageSize = MessageSize;
+
+    fn message_size(self: Pin<&Self>, msg: Outgoing<&M>) -> io::Result<MessageSize> {
         let recipient = self.lookup_recipient_pk(msg.recipient)?;
         let shall_be_encrypted = recipient
             .map(|pk_i| self.encryption_keys.has_encryption_key(&pk_i))
@@ -100,7 +103,11 @@ where
                 },
         ))
     }
-    pub fn poll_ready(&mut self, cx: &mut Context, msg_size: MessageSize) -> Poll<io::Result<()>> {
+    fn poll_ready(
+        self: Pin<&mut Self>,
+        cx: &mut Context,
+        msg_size: MessageSize,
+    ) -> Poll<io::Result<()>> {
         if msg_size.0 > self.buffer_limit {
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -120,7 +127,7 @@ where
         }
         Poll::Ready(Ok(()))
     }
-    pub fn start_send<M>(&mut self, msg: Outgoing<&M>) -> io::Result<()>
+    fn start_send<M>(&mut self, msg: Outgoing<&M>) -> io::Result<()>
     where
         M: Serialize,
     {
@@ -162,7 +169,14 @@ where
 
         Ok(())
     }
+}
 
+impl<'msg, P, K, IO> Outgoings<P, K, IO>
+where
+    P: IdentityResolver + Unpin,
+    K: EncryptionKeys + Unpin,
+    IO: AsyncWrite + Unpin,
+{
     fn lookup_recipient_pk(&self, recipient_index: Option<u16>) -> io::Result<Option<PublicKey>> {
         match recipient_index {
             Some(i) => {

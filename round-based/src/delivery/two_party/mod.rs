@@ -8,6 +8,7 @@
 //! development purposes, see [insecure module](insecure))
 
 use std::convert::{TryFrom, TryInto};
+use std::io::Cursor;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -19,7 +20,7 @@ use pin_project_lite::pin_project;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::delivery::OutgoingChannel;
-use crate::{DeliverOutgoing, Delivery, Incoming, Outgoing};
+use crate::{Delivery, Incoming, Outgoing, OutgoingDelivery};
 
 pub mod insecure;
 #[cfg(feature = "tls")]
@@ -195,54 +196,44 @@ impl<S: AsyncWrite> OutgoingChannel for SendLink<S> {
     }
 }
 
-impl<'m, M, S> DeliverOutgoing<'m, &'m M> for SendLink<S>
+impl<'m, M, S> OutgoingDelivery<M> for SendLink<S>
 where
     M: Serialize + Unpin,
     S: AsyncWrite,
 {
-    type Prepared = PreparedMsg<'m, M>;
+    type MessageSize = SerializedMsgSize;
 
-    fn prepare(self: Pin<&Self>, msg: Outgoing<&'m M>) -> io::Result<Self::Prepared> {
-        if !(msg.recipient.is_none() || msg.recipient == Some(self.counterparty_id)) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "recipient index mismatched",
-            ));
-        }
-
-        let me = self.project_ref();
-
+    fn message_size(self: Pin<&Self>, msg: Outgoing<&M>) -> Result<Self::MessageSize, Self::Error> {
         let serialized_size = bincode::serialized_size(&msg.msg)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
             .try_into()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-        if usize::from(serialized_size) > *me.msg_len_limit {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "message is too large to fit into the intermediate buffer",
-            ));
-        }
-        Ok(PreparedMsg {
-            serialized_size,
-            msg: msg.msg,
-        })
+        Ok(SerializedMsgSize(serialized_size))
     }
 
-    fn poll_start_send(
+    fn poll_ready(
         mut self: Pin<&mut Self>,
-        cx: &mut Context,
-        msg: &mut Self::Prepared,
-    ) -> Poll<io::Result<()>> {
+        cx: &mut Context<'_>,
+        &SerializedMsgSize(msg_size): &Self::MessageSize,
+    ) -> Poll<Result<(), Self::Error>> {
         let me = self.as_mut().project();
 
+        // Check whether message is not too long
+        if usize::from(msg_size) > *me.msg_len_limit {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "message is too large to fit into the intermediate buffer",
+            )));
+        }
+
         // Check if the buffer is able to fit the message
-        if usize::from(msg.serialized_size) + 2 > me.buffer.len() {
+        if usize::from(msg_size) + 2 > me.buffer.len() {
             // if it does not, we need to grow the buffer
-            me.buffer.resize(usize::from(msg.serialized_size) + 2, 0);
+            me.buffer.resize(usize::from(msg_size) + 2, 0);
         }
 
         // Check if we have enough capacity in the buffer
-        while usize::from(msg.serialized_size) + 2 > self.as_ref().buffer_capacity() {
+        while usize::from(msg_size) + 2 > self.as_ref().buffer_capacity() {
             // Not enough capacity - need to flush the buffer
             match Self::poll_flush(self.as_mut(), cx) {
                 Poll::Ready(Ok(())) => (),
@@ -251,29 +242,52 @@ where
             };
         }
 
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, msg: Outgoing<&M>) -> Result<(), Self::Error> {
+        if msg.recipient.is_some() && msg.recipient != Some(self.counterparty_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "recipient index mismatched",
+            ));
+        }
+
+        if self.as_ref().buffer_capacity() < 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "channel is not prepared to send a message",
+            ));
+        }
+
         let me = self.as_mut().project();
 
-        // Serialize msg to the buffer
-        me.buffer[*me.buffer_filled..*me.buffer_filled + 2]
-            .copy_from_slice(&msg.serialized_size.to_be_bytes());
-        *me.buffer_filled += 2;
+        // Take unfilled part of the buffer
+        let buffer = &mut me.buffer[*me.buffer_filled..];
+        // Reserve two first bytes for message size
+        let (msg_size_buffer, msg_buffer) = buffer.split_at_mut(2);
+        let mut msg_buffer = Cursor::new(msg_buffer);
 
-        bincode::serialize_into(
-            &mut me.buffer[*me.buffer_filled..*me.buffer_filled + usize::from(msg.serialized_size)],
-            &msg.msg,
-        )
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        *me.buffer_filled += usize::from(msg.serialized_size);
+        // Serialize message to the buffer
+        bincode::serialize_into(&mut msg_buffer, &msg.msg)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        Poll::Ready(Ok(()))
+        // Calculate message size and prepend it to the message
+        let msg_size: u16 = msg_buffer
+            .position()
+            .try_into()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "msg_size overflows u16"))?;
+        msg_size_buffer.copy_from_slice(&msg_size.to_be_bytes());
+
+        // Update number of filled bytes
+        *me.buffer_filled += 2 + usize::from(msg_size);
+
+        Ok(())
     }
 }
 
-/// Message sending over [SendLink]
-pub struct PreparedMsg<'m, M> {
-    msg: &'m M,
-    serialized_size: u16,
-}
+/// Size of the message transferring over [SendLink]
+pub struct SerializedMsgSize(u16);
 
 pin_project! {
     /// An incoming link from the party
@@ -426,8 +440,8 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     use crate::delivery::{
-        DeliverOutgoing, DeliverOutgoingExt, Delivery, Incoming, Outgoing, OutgoingChannel,
-        OutgoingChannelExt,
+        Delivery, Incoming, Outgoing, OutgoingChannel, OutgoingChannelExt, OutgoingDelivery,
+        OutgoingDeliveryExt,
     };
 
     use super::{Side, TwoParty};
@@ -572,7 +586,7 @@ mod tests {
         counterparty_id: u16,
     ) where
         R: RngCore,
-        Link: for<'m> DeliverOutgoing<'m, &'m Bytes> + Unpin,
+        Link: OutgoingDelivery<Bytes> + Unpin,
         Link::Error: Debug,
         Range: rand::distributions::uniform::SampleRange<usize> + Clone,
     {
