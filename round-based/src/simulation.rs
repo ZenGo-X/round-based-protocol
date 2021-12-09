@@ -108,7 +108,16 @@ pub struct SimulationOutgoing<M> {
 }
 
 impl<M> OutgoingChannel for SimulationOutgoing<M> {
+    type MessageSize = OneMessage;
     type Error = broadcast::error::SendError<()>;
+
+    fn poll_ready(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _msg_size: &Self::MessageSize,
+    ) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -123,21 +132,11 @@ impl<M> OutgoingDelivery<M> for SimulationOutgoing<M>
 where
     M: Clone,
 {
-    type MessageSize = OneMessage;
-
     fn message_size(
         self: Pin<&Self>,
         _msg: Outgoing<&M>,
     ) -> Result<Self::MessageSize, Self::Error> {
         Ok(OneMessage(()))
-    }
-
-    fn poll_ready(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        _msg_size: &Self::MessageSize,
-    ) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
     }
 
     fn start_send(self: Pin<&mut Self>, msg: Outgoing<&M>) -> Result<(), Self::Error> {

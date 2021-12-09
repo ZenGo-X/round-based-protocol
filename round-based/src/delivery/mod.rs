@@ -18,9 +18,9 @@ use std::task::{Context, Poll};
 
 use futures::{ready, Stream};
 
-// #[cfg(feature = "trusted-delivery")]
-// #[cfg_attr(docsrs, doc(cfg(feature = "trusted-delivery")))]
-// pub mod trusted_delivery;
+#[cfg(feature = "trusted-delivery")]
+#[cfg_attr(docsrs, doc(cfg(feature = "trusted-delivery")))]
+pub mod trusted_delivery;
 pub mod two_party;
 pub mod utils;
 
@@ -38,8 +38,24 @@ pub trait Delivery<M> {
 
 /// Manages outgoing delivery channel
 pub trait OutgoingChannel {
+    /// Size of the message being transferred over outgoing channel
+    type MessageSize: Unpin;
     /// Delivery error
     type Error;
+
+    /// Attempts to prepare channel for sending a message of given `msg_size`
+    ///
+    /// Once it returned `Poll::Ready(Ok(()))`, you can call [`start_send`](OutgoingDelivery::start_send)
+    /// with message of given size. Note that in order to actually send the message, you need to flush
+    /// the channel via [poll_flush](Self::poll_flush).
+    ///
+    /// If this method results in error, it typically means that the message of that size cannot be
+    /// sent.
+    fn poll_ready(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        msg_size: &Self::MessageSize,
+    ) -> Poll<Result<(), Self::Error>>;
 
     /// Flushes the underlying I/O
     ///
@@ -65,27 +81,10 @@ pub trait OutgoingChannel {
 /// [send_all]: DeliverOutgoingExt::send_all
 /// [shutdown]: DeliverOutgoingExt::shutdown
 pub trait OutgoingDelivery<M>: OutgoingChannel {
-    /// Size of the message
-    type MessageSize: Unpin;
-
     /// Returns size of the message that's required by [`poll_start_send`](Self::poll_start_send)
     ///
     /// The method returns a error if message size cannot be evaluated
     fn message_size(self: Pin<&Self>, msg: Outgoing<&M>) -> Result<Self::MessageSize, Self::Error>;
-
-    /// Attempts to prepare channel for sending a message of given `msg_size`
-    ///
-    /// Once it returned `Poll::Ready(Ok(()))`, you can call [`start_send`](Self::start_send) with
-    /// message of given size. Note that in order to actually send the message, you need to flush
-    /// the channel via [poll_flush](Self::poll_flush).
-    ///
-    /// If this method results in error, it typically means that the message of that size cannot be
-    /// sent.
-    fn poll_ready(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        msg_size: &Self::MessageSize,
-    ) -> Poll<Result<(), Self::Error>>;
 
     /// Queues sending the message
     ///

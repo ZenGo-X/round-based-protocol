@@ -23,7 +23,7 @@ use crate::delivery::trusted_delivery::client::insecure::outgoing::{MessageSize,
 use crate::delivery::OutgoingChannel;
 use crate::rounds::store::{RoundInput, RoundInputError};
 use crate::rounds::MessagesStore;
-use crate::{Incoming, Outgoing};
+use crate::{Incoming, Outgoing, OutgoingDelivery};
 
 mod ephemeral;
 
@@ -89,8 +89,7 @@ where
         };
         let recipient_index = RecipientIndex::new(local_party_index, n);
         let state = State::SendKeys {
-            size: handshake
-                .outgoings
+            size: Pin::new(&handshake.outgoings)
                 .message_size(handshake.ith_handshake_message(&recipient_index).as_ref())
                 .map_err(ConstructError::EstimateMessageSize)?,
             i: recipient_index,
@@ -123,14 +122,14 @@ where
         loop {
             this.state = match this.state {
                 State::SendKeys { i, size } => {
-                    ready!(this.outgoings.poll_ready(cx, size)).map_err(|err| {
+                    ready!(Pin::new(&mut this.outgoings).poll_ready(cx, &size)).map_err(|err| {
                         HandshakeError::ReserveSpaceInOutgoingsBuffer {
                             recipient: i.recipient_index(),
                             err,
                         }
                     })?;
                     let ith_message = this.ith_handshake_message(&i);
-                    this.outgoings
+                    Pin::new(&mut this.outgoings)
                         .start_send(ith_message.as_ref())
                         .map_err(|err| HandshakeError::StartSending {
                             recipient: i.recipient_index(),
@@ -139,8 +138,8 @@ where
 
                     if let Some(i) = i.increment() {
                         let next_msg = this.ith_handshake_message(&i);
-                        let size = this
-                            .outgoings
+                        let size = Pin::new(&mut this.outgoings)
+                            .as_ref()
                             .message_size(next_msg.as_ref())
                             .map_err(HandshakeError::EstimateMessageSize)?;
                         State::SendKeys { i, size }
@@ -194,7 +193,6 @@ where
                 State::Gone => return Poll::Ready(Err(HandshakeError::PollAfterComplete)),
             };
         }
-        todo!()
     }
 }
 

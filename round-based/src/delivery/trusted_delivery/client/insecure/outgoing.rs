@@ -82,8 +82,6 @@ where
     K: EncryptionKeys + Unpin,
     IO: AsyncWrite + Unpin,
 {
-    type MessageSize = MessageSize;
-
     fn message_size(self: Pin<&Self>, msg: Outgoing<&M>) -> io::Result<MessageSize> {
         let recipient = self.lookup_recipient_pk(msg.recipient)?;
         let shall_be_encrypted = recipient
@@ -103,37 +101,12 @@ where
                 },
         ))
     }
-    fn poll_ready(
-        self: Pin<&mut Self>,
-        cx: &mut Context,
-        msg_size: MessageSize,
-    ) -> Poll<io::Result<()>> {
-        if msg_size.0 > self.buffer_limit {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "message too long: len={}, limit={}",
-                    msg_size.0, self.buffer_limit
-                ),
-            )));
-        }
-        if msg_size.0 > self.buffer.len() {
-            self.buffer.resize(msg_size.0, 0)
-        }
-        if msg_size.0 > self.buffer.len() - self.filled_bytes {
-            // Not enough capacity - need to drain the buffer
-            ready!(Pin::new(&mut *self).poll_flush(cx))?;
-            debug_assert!(self.filled_bytes == 0);
-        }
-        Poll::Ready(Ok(()))
-    }
-    fn start_send<M>(&mut self, msg: Outgoing<&M>) -> io::Result<()>
-    where
-        M: Serialize,
-    {
-        let recipient = self.lookup_recipient_pk(msg.recipient)?;
+    fn start_send(mut self: Pin<&mut Self>, msg: Outgoing<&M>) -> io::Result<()> {
+        let this = &mut *self;
 
-        let (_filled, capacity) = self.buffer.split_at_mut(self.filled_bytes);
+        let recipient = this.lookup_recipient_pk(msg.recipient)?;
+
+        let (_filled, capacity) = this.buffer.split_at_mut(this.filled_bytes);
         let (header, capacity) = capacity.split_at_mut(PublishMsgHeader::SIZE);
 
         let mut writer = Cursor::new(&mut *capacity);
@@ -148,23 +121,23 @@ where
         let (data, capacity) = capacity.split_at_mut(msg_len);
 
         let constructed_header = if let Some(recipient) = recipient {
-            if let Some(ek) = self.encryption_keys.get_encryption_key(&recipient) {
+            if let Some(ek) = this.encryption_keys.get_encryption_key(&recipient) {
                 let (tag, _capacity) =
                     capacity.split_at_mut(<K::Key as EncryptionKey>::TagSize::USIZE);
                 let tag_bytes = ek.encrypt(&[], data).map_err(|_| {
                     io::Error::new(io::ErrorKind::Other, "cannot encrypt the message")
                 })?;
                 tag.copy_from_slice(tag_bytes.as_slice());
-                PublishMsgHeader::new(&self.identity_key, Some(recipient), data, tag)
+                PublishMsgHeader::new(&this.identity_key, Some(recipient), data, tag)
             } else {
-                PublishMsgHeader::new(&self.identity_key, Some(recipient), data, &[])
+                PublishMsgHeader::new(&this.identity_key, Some(recipient), data, &[])
             }
         } else {
-            PublishMsgHeader::new(&self.identity_key, recipient, data, &[])
+            PublishMsgHeader::new(&this.identity_key, recipient, data, &[])
         };
 
         header.copy_from_slice(&constructed_header.to_bytes());
-        self.filled_bytes +=
+        this.filled_bytes +=
             PublishMsgHeader::SIZE + usize::from(constructed_header.message_body_len);
 
         Ok(())
@@ -197,7 +170,34 @@ where
     K: EncryptionKeys + Unpin,
     IO: AsyncWrite + Unpin,
 {
+    type MessageSize = MessageSize;
+
     type Error = io::Error;
+
+    fn poll_ready(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context,
+        &MessageSize(msg_size): &MessageSize,
+    ) -> Poll<io::Result<()>> {
+        if msg_size > self.buffer_limit {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "message too long: len={}, limit={}",
+                    msg_size, self.buffer_limit
+                ),
+            )));
+        }
+        if msg_size > self.buffer.len() {
+            self.buffer.resize(msg_size, 0)
+        }
+        if msg_size > self.buffer.len() - self.filled_bytes {
+            // Not enough capacity - need to drain the buffer
+            ready!(Pin::new(&mut *self).poll_flush(cx))?;
+            debug_assert!(self.filled_bytes == 0);
+        }
+        Poll::Ready(Ok(()))
+    }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         let this = &mut *self;
@@ -263,7 +263,7 @@ mod tests {
     };
     use crate::delivery::trusted_delivery::client::insecure::outgoing::Outgoings;
     use crate::delivery::trusted_delivery::messages::{FixedSizeMsg, PublishMsgHeader};
-    use crate::Outgoing;
+    use crate::{Outgoing, OutgoingDelivery};
 
     use crate::delivery::trusted_delivery::client::insecure::incoming::incomings_tests::generate_parties_sk;
     use crate::delivery::OutgoingChannel;
@@ -320,9 +320,10 @@ mod tests {
             ek.clone(),
             Cursor::new(&mut actual),
         );
-        let mut outgoing = Pin::new(&mut outgoing);
 
         for Outgoing { recipient, msg } in msgs {
+            let mut outgoing = Pin::new(&mut outgoing);
+
             let has_to_be_encrypted = recipient == Some(3) || recipient == Some(4);
             let serialized_data = bincode::serialize(&msg).unwrap();
             let msg_size = PublishMsgHeader::SIZE
@@ -361,17 +362,17 @@ mod tests {
                 recipient,
                 msg: &msg,
             };
-            let message_size = outgoing.message_size(msg).unwrap();
-            futures::future::poll_fn(|cx| outgoing.poll_ready(cx, message_size))
+            let message_size = outgoing.as_ref().message_size(msg).unwrap();
+            futures::future::poll_fn(|cx| outgoing.as_mut().poll_ready(cx, &message_size))
                 .await
                 .unwrap();
             let old_position = outgoing.filled_bytes;
-            outgoing.start_send(msg).unwrap();
+            outgoing.as_mut().start_send(msg).unwrap();
             let new_position = outgoing.filled_bytes;
             prop_assert_eq!(message_size.0, new_position - old_position)
         }
 
-        futures::future::poll_fn(move |cx| outgoing.as_mut().poll_flush(cx))
+        futures::future::poll_fn(move |cx| Pin::new(&mut outgoing).poll_flush(cx))
             .await
             .unwrap();
 

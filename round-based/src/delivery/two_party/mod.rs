@@ -158,7 +158,42 @@ impl<L> SendLink<L> {
 }
 
 impl<S: AsyncWrite> OutgoingChannel for SendLink<S> {
+    type MessageSize = SerializedMsgSize;
     type Error = io::Error;
+
+    fn poll_ready(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        &SerializedMsgSize(msg_size): &Self::MessageSize,
+    ) -> Poll<Result<(), Self::Error>> {
+        let me = self.as_mut().project();
+
+        // Check whether message is not too long
+        if usize::from(msg_size) > *me.msg_len_limit {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "message is too large to fit into the intermediate buffer",
+            )));
+        }
+
+        // Check if the buffer is able to fit the message
+        if usize::from(msg_size) + 2 > me.buffer.len() {
+            // if it does not, we need to grow the buffer
+            me.buffer.resize(usize::from(msg_size) + 2, 0);
+        }
+
+        // Check if we have enough capacity in the buffer
+        while usize::from(msg_size) + 2 > self.as_ref().buffer_capacity() {
+            // Not enough capacity - need to flush the buffer
+            match Self::poll_flush(self.as_mut(), cx) {
+                Poll::Ready(Ok(())) => (),
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            };
+        }
+
+        Poll::Ready(Ok(()))
+    }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
         let me = self.as_mut().project();
@@ -201,48 +236,12 @@ where
     M: Serialize + Unpin,
     S: AsyncWrite,
 {
-    type MessageSize = SerializedMsgSize;
-
     fn message_size(self: Pin<&Self>, msg: Outgoing<&M>) -> Result<Self::MessageSize, Self::Error> {
         let serialized_size = bincode::serialized_size(&msg.msg)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
             .try_into()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         Ok(SerializedMsgSize(serialized_size))
-    }
-
-    fn poll_ready(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        &SerializedMsgSize(msg_size): &Self::MessageSize,
-    ) -> Poll<Result<(), Self::Error>> {
-        let me = self.as_mut().project();
-
-        // Check whether message is not too long
-        if usize::from(msg_size) > *me.msg_len_limit {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "message is too large to fit into the intermediate buffer",
-            )));
-        }
-
-        // Check if the buffer is able to fit the message
-        if usize::from(msg_size) + 2 > me.buffer.len() {
-            // if it does not, we need to grow the buffer
-            me.buffer.resize(usize::from(msg_size) + 2, 0);
-        }
-
-        // Check if we have enough capacity in the buffer
-        while usize::from(msg_size) + 2 > self.as_ref().buffer_capacity() {
-            // Not enough capacity - need to flush the buffer
-            match Self::poll_flush(self.as_mut(), cx) {
-                Poll::Ready(Ok(())) => (),
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => return Poll::Pending,
-            };
-        }
-
-        Poll::Ready(Ok(()))
     }
 
     fn start_send(mut self: Pin<&mut Self>, msg: Outgoing<&M>) -> Result<(), Self::Error> {
