@@ -16,7 +16,7 @@ pub struct Simulation<M> {
 
 impl<M> Simulation<M>
 where
-    M: ProtocolMessage + Clone + Send + Unpin + 'static,
+    M: Clone + Send + Unpin + 'static,
 {
     pub fn new() -> Self {
         Self {
@@ -32,6 +32,27 @@ where
         }
     }
 
+    pub fn connect_new_party(&mut self) -> SimulationDelivery<M> {
+        let local_party_idx = self.next_party_idx;
+        self.next_party_idx += 1;
+
+        SimulationDelivery {
+            incoming: SimulationIncoming {
+                local_party_idx,
+                receiver: BroadcastStream::new(self.channel.subscribe()),
+            },
+            outgoing: SimulationOutgoing {
+                local_party_idx,
+                sender: self.channel.clone(),
+            },
+        }
+    }
+}
+
+impl<M> Simulation<M>
+where
+    M: ProtocolMessage + Clone + Send + Unpin + 'static,
+{
     pub fn add_party(&mut self) -> MpcParty<M, SimulationDelivery<M>> {
         let local_party_idx = self.next_party_idx;
         self.next_party_idx += 1;
@@ -151,4 +172,5 @@ where
 }
 
 /// Size of single message being transferred over simulated channel
+#[derive(Copy, Clone, Debug)]
 pub struct OneMessage(());

@@ -3,6 +3,8 @@ mod crypto;
 mod incoming;
 mod outgoing;
 mod p2p_handshake;
+#[cfg(test)]
+mod test_utils;
 
 // pub struct OutgoingDelivery<P, IO> {
 //     channel: io::WriteHalf<TlsStream<IO>>,

@@ -6,20 +6,13 @@ use std::task::{Context, Poll};
 
 use futures::{ready, Stream};
 use phantom_type::PhantomType;
-use tokio::io::{self, AsyncRead, AsyncWrite};
 
 use secp256k1::PublicKey;
 
 use thiserror::Error;
 
 use crate::delivery::trusted_delivery::client::identity_resolver::IdentityResolver;
-use crate::delivery::trusted_delivery::client::insecure::crypto::{
-    EncryptionScheme, NoDecryption, NoEncryption,
-};
-use crate::delivery::trusted_delivery::client::insecure::incoming::{
-    Incomings, ReceiveAndParse, ReceiveError,
-};
-use crate::delivery::trusted_delivery::client::insecure::outgoing::{MessageSize, Outgoings};
+use crate::delivery::trusted_delivery::client::insecure::crypto::EncryptionScheme;
 use crate::delivery::OutgoingChannel;
 use crate::rounds::store::{RoundInput, RoundInputError};
 use crate::rounds::MessagesStore;
@@ -29,42 +22,44 @@ mod ephemeral;
 
 use self::ephemeral::{EphemeralKey, EphemeralPublicKey};
 
-pub struct Handshake<E, P, I, O> {
+pub struct Handshake<E, P, I, O: OutgoingChannel> {
     i: u16,
     n: u16,
     local_party_identity: PublicKey,
     parties: P,
-    incomings: ReceiveAndParse<EphemeralPublicKey, Incomings<P, NoDecryption, I>>,
-    outgoings: Outgoings<P, NoEncryption, O>,
+    // incomings: ReceiveAndParse<EphemeralPublicKey, Incomings<P, NoDecryption, I>>,
+    // outgoings: Outgoings<P, NoEncryption, O>,
+    incomings: I,
+    outgoings: O,
     ephemeral_keys: Vec<EphemeralKey>,
     received_keys: Option<RoundInput<EphemeralPublicKey>>,
-    state: State,
+    state: State<O::MessageSize>,
     _encryption_scheme: PhantomType<E>,
 }
 
-enum State {
-    SendKeys {
-        i: RecipientIndex,
-        size: MessageSize,
-    },
+enum State<S> {
+    SendKeys { i: RecipientIndex, size: S },
     Flush,
     RecvKeys,
     Gone,
 }
 
-impl<E, P, I, O> Handshake<E, P, I, O>
+impl<E, P, I, O, IErr, OErr> Handshake<E, P, I, O>
 where
     E: EncryptionScheme,
     P: IdentityResolver + Unpin,
-    I: AsyncRead + Unpin,
-    O: AsyncWrite + Unpin,
+    I: Stream<Item = Result<Incoming<EphemeralPublicKey>, IErr>> + Unpin,
+    O: OutgoingDelivery<EphemeralPublicKey, Error = OErr> + Unpin,
+    O::MessageSize: Copy,
 {
     pub fn new(
         identity: PublicKey,
         parties: P,
-        incomings: Incomings<P, NoDecryption, I>,
-        outgoings: Outgoings<P, NoEncryption, O>,
-    ) -> Result<Self, ConstructError> {
+        // incomings: Incomings<P, NoDecryption, I>,
+        // outgoings: Outgoings<P, NoEncryption, O>,
+        incomings: I,
+        outgoings: O,
+    ) -> Result<Self, ConstructError<OErr>> {
         let n = parties.number_of_parties();
         if n < 2 {
             return Err(ConstructError::NumberOfPartiesTooSmall { n });
@@ -80,7 +75,7 @@ where
             n,
             local_party_identity: identity,
             parties,
-            incomings: ReceiveAndParse::new(incomings),
+            incomings,
             outgoings,
             ephemeral_keys,
             received_keys: Some(RoundInput::new(local_party_index, n)),
@@ -107,14 +102,15 @@ where
     }
 }
 
-impl<E, P, I, O> Future for Handshake<E, P, I, O>
+impl<E, P, I, O, IErr, OErr> Future for Handshake<E, P, I, O>
 where
     E: EncryptionScheme,
     P: IdentityResolver + Unpin,
-    I: AsyncRead + Unpin,
-    O: AsyncWrite + Unpin,
+    I: Stream<Item = Result<Incoming<EphemeralPublicKey>, IErr>> + Unpin,
+    O: OutgoingDelivery<EphemeralPublicKey, Error = OErr> + Unpin,
+    O::MessageSize: Copy,
 {
-    type Output = Result<DerivedKeys<E>, HandshakeError>;
+    type Output = Result<DerivedKeys<E>, HandshakeError<IErr, OErr>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = &mut *self;
@@ -253,6 +249,7 @@ impl<E: EncryptionScheme> DerivedKeys<E> {
 
         for ((remote_party_identity, ephemeral_key), party_ephemeral) in parties
             .identities()
+            .filter(|pk| pk != local_party_identity)
             .zip(ephemeral_keys)
             .zip(received_ephemeral_keys)
         {
@@ -299,7 +296,7 @@ impl KdfLabel {
 }
 
 #[derive(Debug, Error)]
-pub enum ConstructError {
+pub enum ConstructError<OErr> {
     #[error("local party public key is not in the list of parties public keys")]
     PartyPkNotInTheList,
     #[error("number of participants is too small: n={n}")]
@@ -307,29 +304,29 @@ pub enum ConstructError {
     #[error("party index out of bounds: i={i}, n={n}")]
     IncorrectPartyIndex { i: u16, n: u16 },
     #[error("cannot estimate size of handshake message")]
-    EstimateMessageSize(#[source] io::Error),
+    EstimateMessageSize(#[source] OErr),
 }
 
 #[derive(Debug, Error)]
-pub enum HandshakeError {
+pub enum HandshakeError<IErr, OErr> {
     #[error("reserve space for outgoing handshake message dedicated to party {recipient:?}")]
     ReserveSpaceInOutgoingsBuffer {
         recipient: u16,
         #[source]
-        err: io::Error,
+        err: OErr,
     },
     #[error("add handshake message dedicated to party {recipient:?} into sending queue")]
     StartSending {
         recipient: u16,
         #[source]
-        err: io::Error,
+        err: OErr,
     },
     #[error("flush outgoing handshake messages")]
-    FlushOutgoings(#[source] io::Error),
+    FlushOutgoings(#[source] OErr),
     #[error("cannot estimate size of handshake message")]
-    EstimateMessageSize(#[source] io::Error),
+    EstimateMessageSize(#[source] OErr),
     #[error("receive message")]
-    Recv(#[source] ReceiveError),
+    Recv(#[source] IErr),
     #[error("unexpected eof: connection is suddenly closed")]
     RecvEof,
     #[error("party {party} sabotaged handshake")]
@@ -358,7 +355,7 @@ enum OccurredBug {
     CannotExtractReceivedMessages(#[source] RoundInputError),
 }
 
-impl From<OccurredBug> for HandshakeError {
+impl<IErr, OErr> From<OccurredBug> for HandshakeError<IErr, OErr> {
     fn from(bug: OccurredBug) -> Self {
         HandshakeError::Bug(Bug(bug))
     }
@@ -367,3 +364,152 @@ impl From<OccurredBug> for HandshakeError {
 #[derive(Debug, Error)]
 #[error("couldn't derive encryption/decryption key")]
 pub struct KdfError;
+
+#[cfg(test)]
+mod tests {
+    use std::iter;
+
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+
+    use crate::delivery::trusted_delivery::client::insecure::crypto::aead::AeadEncryptionScheme;
+    use crate::delivery::trusted_delivery::client::insecure::p2p_handshake::ephemeral::EphemeralPublicKey;
+    use crate::delivery::trusted_delivery::client::insecure::test_utils::generate_parties_sk;
+    use crate::simulation::Simulation;
+    use crate::Delivery;
+
+    use super::Handshake;
+    use crate::delivery::trusted_delivery::client::insecure::crypto::{
+        DecryptionKey, EncryptionKey,
+    };
+
+    type EncryptionScheme = AeadEncryptionScheme<aes_gcm::Aes256Gcm>;
+
+    #[tokio::test]
+    async fn simulated_two_party_handshake() {
+        let (pk, _sk) = generate_parties_sk(2);
+
+        let mut simulation = Simulation::<EphemeralPublicKey>::new();
+        let party1 = simulation.connect_new_party();
+        let party2 = simulation.connect_new_party();
+
+        let (party1_in, party1_out) = party1.split();
+        let (party2_in, party2_out) = party2.split();
+
+        let handshake1 =
+            Handshake::<EncryptionScheme, _, _, _>::new(pk[0], pk.clone(), party1_in, party1_out)
+                .unwrap();
+        let handshake2 =
+            Handshake::<EncryptionScheme, _, _, _>::new(pk[1], pk.clone(), party2_in, party2_out)
+                .unwrap();
+
+        let (mut keys1, mut keys2) = futures::future::try_join(handshake1, handshake2)
+            .await
+            .unwrap();
+
+        // Ensure that party1 can encrypt arbitrary message and party2 can decrypt it
+        let mut msg1 = [0u8; 100];
+        let mut ad1 = [0u8; 20];
+        OsRng.fill_bytes(&mut msg1);
+        OsRng.fill_bytes(&mut ad1);
+
+        let mut encrypted_msg1 = msg1;
+        let tag1 = keys1
+            .encryption_keys
+            .get_mut(&pk[1])
+            .unwrap()
+            .encrypt(&ad1, &mut encrypted_msg1)
+            .unwrap();
+
+        let mut decrypted_msg1 = encrypted_msg1;
+        keys2
+            .decryption_keys
+            .get_mut(&pk[0])
+            .unwrap()
+            .decrypt(&ad1, &mut decrypted_msg1, &tag1)
+            .unwrap();
+
+        assert_eq!(msg1, decrypted_msg1);
+
+        // Ensure that party2 can encrypt arbitrary message and party2 can decrypt it
+        let mut msg2 = [0u8; 100];
+        let mut ad2 = [0u8; 20];
+        OsRng.fill_bytes(&mut msg2);
+        OsRng.fill_bytes(&mut ad2);
+
+        let mut encrypted_msg2 = msg2;
+        let tag2 = keys2
+            .encryption_keys
+            .get_mut(&pk[0])
+            .unwrap()
+            .encrypt(&ad2, &mut encrypted_msg2)
+            .unwrap();
+
+        let mut decrypted_msg2 = encrypted_msg2;
+        keys1
+            .decryption_keys
+            .get_mut(&pk[1])
+            .unwrap()
+            .decrypt(&ad2, &mut decrypted_msg2, &tag2)
+            .unwrap();
+
+        assert_eq!(msg2, decrypted_msg2);
+    }
+
+    #[tokio::test]
+    async fn simulated_handshake_among_many_parties() {
+        for n in 2..=10 {
+            simulated_n_parties_handshake(n).await
+        }
+    }
+
+    async fn simulated_n_parties_handshake(n: u16) {
+        let (pk, _sk) = generate_parties_sk(n);
+
+        let mut simulation =
+            Simulation::<EphemeralPublicKey>::with_capacity(usize::from(n * (n - 1)));
+
+        let parties = (0..n).zip(iter::repeat_with(|| simulation.connect_new_party()));
+
+        let handshakes = parties.map(|(i, party)| {
+            let (party_in, party_out) = party.split();
+            Handshake::<EncryptionScheme, _, _, _>::new(
+                pk[usize::from(i)],
+                pk.clone(),
+                party_in,
+                party_out,
+            )
+            .unwrap()
+        });
+
+        let mut keys = futures::future::try_join_all(handshakes).await.unwrap();
+
+        // Ensure that party_i can encrypt arbitrary message and party_j can decrypt it (forall i j. i != j)
+        for i in 0..n {
+            for j in (0..n).filter(|j| i != *j) {
+                let mut msg = [0u8; 100];
+                let mut ad = [0u8; 20];
+                OsRng.fill_bytes(&mut msg);
+                OsRng.fill_bytes(&mut ad);
+
+                let mut encrypted_msg = msg;
+                let tag = keys[usize::from(i)]
+                    .encryption_keys
+                    .get_mut(&pk[usize::from(j)])
+                    .unwrap()
+                    .encrypt(&ad, &mut encrypted_msg)
+                    .unwrap();
+
+                let mut decrypted_msg = encrypted_msg;
+                keys[usize::from(j)]
+                    .decryption_keys
+                    .get_mut(&pk[usize::from(i)])
+                    .unwrap()
+                    .decrypt(&ad, &mut decrypted_msg, &tag)
+                    .unwrap();
+
+                assert_eq!(msg, decrypted_msg);
+            }
+        }
+    }
+}

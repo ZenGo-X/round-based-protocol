@@ -44,17 +44,6 @@ pub struct AeadKey<K: AeadCore, P> {
     _purpose: PhantomType<P>,
 }
 
-// #[cfg(test)]
-// impl<K, P> AeadKey<K, P> {
-//     pub fn new(counter: u64, key: K) -> Self {
-//         Self {
-//             counter: Some(counter),
-//             key,
-//             _purpose: PhantomType::new(),
-//         }
-//     }
-// }
-
 #[cfg(test)]
 impl<K, P> Clone for AeadKey<K, P>
 where

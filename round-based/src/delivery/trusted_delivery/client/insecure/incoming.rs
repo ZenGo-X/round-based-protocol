@@ -286,9 +286,8 @@ where
 }
 
 #[cfg(test)]
-pub mod incomings_tests {
+mod incomings_tests {
     use std::collections::HashMap;
-    use std::iter;
 
     use aes_gcm::{
         aead::{Aead, NewAead},
@@ -297,7 +296,7 @@ pub mod incomings_tests {
     use generic_array::{typenum::U12, GenericArray};
     use rand::rngs::OsRng;
     use rand::RngCore;
-    use secp256k1::{PublicKey, SecretKey, SECP256K1};
+    use secp256k1::{PublicKey, SecretKey};
 
     use futures::StreamExt;
 
@@ -308,6 +307,7 @@ pub mod incomings_tests {
         AesGcmDecryptionKey, DecryptionKeys, NoDecryption,
     };
     use crate::delivery::trusted_delivery::client::insecure::incoming::StreamRef;
+    use crate::delivery::trusted_delivery::client::insecure::test_utils::generate_parties_sk;
     use crate::delivery::trusted_delivery::messages::{
         FixedSizeMsg, ForwardMsg, ForwardMsgHeader, ReceiveData,
     };
@@ -359,25 +359,6 @@ pub mod incomings_tests {
         let mut key = GenericArray::default();
         OsRng.fill_bytes(key.as_mut_slice());
         key
-    }
-
-    pub fn generate_parties_sk(n: u16) -> (SortedIdentities, Vec<SecretKey>) {
-        let generate_sk = || loop {
-            let mut key = [0u8; 32];
-            OsRng.fill_bytes(&mut key);
-            if let Ok(key) = SecretKey::from_slice(&key) {
-                break key;
-            }
-        };
-        let mut keys = iter::repeat_with(generate_sk)
-            .map(|sk_i| (PublicKey::from_secret_key(&SECP256K1, &sk_i), sk_i))
-            .take(usize::from(n))
-            .collect::<Vec<_>>();
-        keys.sort_by_key(|(pk_i, _)| *pk_i);
-
-        let (pk, sk): (Vec<_>, Vec<_>) = keys.into_iter().unzip();
-        let pk = SortedIdentities::from(pk);
-        (pk, sk)
     }
 
     struct DecryptionKeysBuilder<'pk> {
