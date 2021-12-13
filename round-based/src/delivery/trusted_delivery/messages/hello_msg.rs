@@ -3,7 +3,7 @@ use sha2::Digest;
 use thiserror::Error;
 
 use crate::delivery::trusted_delivery::client::insecure::crypto::{
-    CryptoSuite, DigestExt, PublicKey, SigningKey,
+    CryptoSuite, DigestExt, Serializable, SigningKey,
 };
 
 use super::FixedSizeMsg;
@@ -16,7 +16,7 @@ pub type RoomId = [u8; 32];
 pub struct HelloMsg<C: CryptoSuite> {
     pub identity: C::VerificationKey,
     pub room_id: RoomId,
-    pub signature: GenericArray<u8, C::SignatureSize>,
+    pub signature: C::Signature,
 }
 
 impl<C: CryptoSuite> HelloMsg<C> {
@@ -49,8 +49,8 @@ impl<C: CryptoSuite> FixedSizeMsg for HelloMsg<C> {
         let mut room_id = [0u8; 32];
         room_id.copy_from_slice(&input[identity_size..identity_size + room_size]);
 
-        let mut signature = GenericArray::<u8, C::SignatureSize>::default();
-        signature.copy_from_slice(&input[identity_size + room_size..]);
+        let signature = C::Signature::from_bytes(&input[identity_size + room_size..])
+            .map_err(|_| InvalidHelloMsg::InvalidSignature)?;
 
         C::Digest::new()
             .chain(&room_id)
@@ -72,7 +72,7 @@ impl<C: CryptoSuite> FixedSizeMsg for HelloMsg<C> {
 
         msg[0..identity_size].copy_from_slice(&self.identity.to_bytes());
         msg[identity_size..identity_size + room_size].copy_from_slice(&self.room_id);
-        msg[identity_size + room_size..].copy_from_slice(&self.signature);
+        msg[identity_size + room_size..].copy_from_slice(&self.signature.to_bytes());
 
         msg
     }

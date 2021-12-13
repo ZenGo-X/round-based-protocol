@@ -26,6 +26,7 @@ pub trait CryptoSuite {
     type SigningScheme: SigningScheme<
         PublicKey = Self::VerificationKey,
         SecretKey = Self::SigningKey,
+        Signature = Self::Signature,
         SignatureSize = Self::SignatureSize,
     >;
 
@@ -33,25 +34,19 @@ pub trait CryptoSuite {
     type DecryptionKey: DecryptionKey;
     type SigningKey: SigningKey<
         VerificationKey = Self::VerificationKey,
-        SignatureSize = Self::SignatureSize,
+        Signature = Self::Signature,
         HashedMessageSize = Self::DigestOutputSize,
     >;
     type VerificationKey: VerificationKey<
         Size = Self::VerificationKeySize,
+        Signature = Self::Signature,
         HashedMessageSize = Self::DigestOutputSize,
     >;
+    type Signature: Serializable<Size = Self::SignatureSize, Error = InvalidSignature>;
 
     type SignatureSize: ArrayLength<u8>;
     type VerificationKeySize: ArrayLength<u8>;
 }
-
-// pub const fn signature_size<C: CryptoSuite>() -> usize {
-//     C::SignatureSize::USIZE
-// }
-//
-// pub const fn verification_key_size<C: CryptoSuite>() -> usize {
-//     C::VerificationKey::Size::USIZE
-// }
 
 pub trait KeyExchangeScheme {
     type PublicKey;
@@ -74,38 +69,45 @@ pub trait SigningScheme {
     type PublicKey: VerificationKey;
     type SecretKey: SigningKey<
         VerificationKey = Self::PublicKey,
-        SignatureSize = Self::SignatureSize,
+        Signature = Self::Signature,
         HashedMessageSize = <Self::PublicKey as VerificationKey>::HashedMessageSize,
     >;
+    type Signature: Serializable<Size = Self::SignatureSize>;
 
     type SignatureSize: ArrayLength<u8>;
 }
 
 pub trait SigningKey {
     type VerificationKey: VerificationKey;
-    type SignatureSize: ArrayLength<u8>;
+    type Signature;
     type HashedMessageSize: ArrayLength<u8>;
 
     fn generate() -> Self;
-    fn sign<D>(&self, hashed_message: D) -> GenericArray<u8, Self::SignatureSize>
+    fn sign<D>(&self, hashed_message: D) -> Self::Signature
     where
         D: Digest<OutputSize = Self::HashedMessageSize>;
     fn verification_key(&self) -> Self::VerificationKey;
 }
 
-pub trait VerificationKey: PublicKey + Unpin {
+pub trait VerificationKey: Serializable<Error = InvalidVerificationKey> {
+    type Signature;
     type HashedMessageSize: ArrayLength<u8>;
 
-    fn verify<D>(&self, hashed_message: D, signature: &[u8]) -> Result<(), InvalidSignature>
+    fn verify<D>(
+        &self,
+        hashed_message: D,
+        signature: &Self::Signature,
+    ) -> Result<(), InvalidSignature>
     where
         D: Digest<OutputSize = Self::HashedMessageSize>;
 }
 
-pub trait PublicKey: Clone {
+pub trait Serializable: Clone {
     type Size: ArrayLength<u8>;
+    type Error;
 
     fn to_bytes(&self) -> GenericArray<u8, Self::Size>;
-    fn from_bytes(bytes: &[u8]) -> Result<Self, InvalidVerificationKey>;
+    fn from_bytes(bytes: &[u8]) -> Result<Self, Self::Error>;
 }
 
 #[derive(Error, Debug)]
@@ -120,12 +122,12 @@ pub trait DigestExt: Digest {
     fn verify_signature<K>(
         self,
         verification_key: &K,
-        signature: &[u8],
+        signature: &K::Signature,
     ) -> Result<(), InvalidSignature>
     where
         K: VerificationKey<HashedMessageSize = Self::OutputSize>;
 
-    fn sign_message<K>(self, secret_key: &K) -> GenericArray<u8, K::SignatureSize>
+    fn sign_message<K>(self, secret_key: &K) -> K::Signature
     where
         K: SigningKey<HashedMessageSize = Self::OutputSize>;
 }
@@ -138,7 +140,7 @@ where
     fn verify_signature<K>(
         self,
         verification_key: &K,
-        signature: &[u8],
+        signature: &K::Signature,
     ) -> Result<(), InvalidSignature>
     where
         K: VerificationKey<HashedMessageSize = Self::OutputSize>,
@@ -147,7 +149,7 @@ where
     }
 
     #[inline(always)]
-    fn sign_message<K>(self, secret_key: &K) -> GenericArray<u8, K::SignatureSize>
+    fn sign_message<K>(self, secret_key: &K) -> K::Signature
     where
         K: SigningKey<HashedMessageSize = Self::OutputSize>,
     {

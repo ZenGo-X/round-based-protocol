@@ -7,7 +7,7 @@ use sha2::Digest;
 use thiserror::Error;
 
 use crate::delivery::trusted_delivery::client::insecure::crypto::{
-    CryptoSuite, DigestExt, InvalidSignature, PublicKey, SigningKey,
+    CryptoSuite, DigestExt, InvalidSignature, Serializable, SigningKey,
 };
 use crate::delivery::trusted_delivery::generic_array_ext::Sum;
 
@@ -16,7 +16,7 @@ use super::{DataMsg, FixedSizeMsg};
 pub struct ForwardMsgHeader<C: CryptoSuite> {
     pub sender: C::VerificationKey,
     pub is_broadcast: bool,
-    pub signature: GenericArray<u8, C::SignatureSize>,
+    pub signature: C::Signature,
     pub data_len: u16,
 }
 
@@ -28,7 +28,7 @@ impl<C: CryptoSuite> ForwardMsgHeader<C> {
     ) -> Self {
         let signature = C::Digest::new()
             .chain(&[u8::from(recipient.is_none())])
-            .chain(recipient.map(PublicKey::to_bytes).unwrap_or_default())
+            .chain(recipient.map(Serializable::to_bytes).unwrap_or_default())
             .chain(msg)
             .sign_message(sender_identity_key);
         Self {
@@ -58,10 +58,10 @@ impl<C: CryptoSuite> ForwardMsgHeader<C> {
 
 impl<C: CryptoSuite> FixedSizeMsg for ForwardMsgHeader<C> {
     type Size = Sum![
-        <C::VerificationKey as PublicKey>::Size, // Sender identity
-        U1,                                      // is_broadcast flag
-        C::SignatureSize,                        // Signature
-        U2,                                      // Data len (u16)
+        <C::VerificationKey as Serializable>::Size, // Sender identity
+        U1,                                         // is_broadcast flag
+        C::SignatureSize,                           // Signature
+        U2,                                         // Data len (u16)
     ];
     type ParseError = InvalidForwardMsgHeader;
 
@@ -76,10 +76,9 @@ impl<C: CryptoSuite> FixedSizeMsg for ForwardMsgHeader<C> {
             1 => true,
             x => return Err(InvalidForwardMsgHeader::InvalidIsBroadcast(x)),
         };
-        let signature = GenericArray::<u8, C::SignatureSize>::from_slice(
-            &input[identity_size + 1..identity_size + 1 + signature_size],
-        )
-        .clone();
+        let signature =
+            C::Signature::from_bytes(&input[identity_size + 1..identity_size + 1 + signature_size])
+                .map_err(|_| InvalidForwardMsgHeader::InvalidSignature)?;
         let data_len = <[u8; 2]>::try_from(&input[identity_size + 1 + signature_size..])
             .expect("provided exactly 2 bytes");
         let data_len = u16::from_be_bytes(data_len);
@@ -101,7 +100,7 @@ impl<C: CryptoSuite> FixedSizeMsg for ForwardMsgHeader<C> {
         msg[0..identity_size].copy_from_slice(&self.sender.to_bytes());
         msg[identity_size] = u8::from(self.is_broadcast);
         msg[identity_size + 1..identity_size + 1 + signature_size]
-            .copy_from_slice(self.signature.as_slice());
+            .copy_from_slice(&self.signature.to_bytes());
         msg[identity_size + 1 + signature_size..].copy_from_slice(&self.data_len.to_be_bytes());
 
         msg
@@ -146,7 +145,7 @@ pub enum InvalidForwardMsgHeader {
     #[error("is_broadcast flag has unexpected value: {0} (expected 0 or 1)")]
     InvalidIsBroadcast(u8),
     #[error("invalid signature")]
-    InvalidSignature(#[source] secp256k1::Error),
+    InvalidSignature,
 }
 
 #[derive(Debug, Error)]
