@@ -1,59 +1,61 @@
-use secp256k1::{PublicKey, SecretKey, Signature, SECP256K1};
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 
 use thiserror::Error;
 
+use crate::delivery::trusted_delivery::client::insecure::crypto::{
+    CryptoSuite, DigestExt, PublicKey, SigningKey,
+};
+
 use super::FixedSizeMsg;
+use crate::delivery::trusted_delivery::generic_array_ext::Sum;
+use generic_array::typenum::{Unsigned, U32};
+use generic_array::GenericArray;
 
 pub type RoomId = [u8; 32];
 
-pub struct HelloMsg {
-    pub identity: PublicKey,
+pub struct HelloMsg<C: CryptoSuite> {
+    pub identity: C::VerificationKey,
     pub room_id: RoomId,
-    pub signature: Signature,
+    pub signature: GenericArray<u8, C::SignatureSize>,
 }
 
-impl HelloMsg {
-    const SIZE: usize = 33 // identity
-        + 32 // room_id
-        + 64; // compact signature
-
-    pub fn new(identity_key: &SecretKey, room_id: RoomId) -> Self {
-        let message_hash = Sha256::digest(&room_id);
-        let message_hash = secp256k1::Message::from_slice(&message_hash)
-            .expect("sha256 output is a valid message");
-        let signature = SECP256K1.sign(&message_hash, &identity_key);
+impl<C: CryptoSuite> HelloMsg<C> {
+    pub fn new(identity_key: &C::SigningKey, room_id: RoomId) -> Self {
+        let signature = C::Digest::new().chain(&room_id).sign_message(identity_key);
 
         Self {
-            identity: PublicKey::from_secret_key(&SECP256K1, &identity_key),
+            identity: identity_key.verification_key(),
             room_id,
             signature,
         }
     }
 }
 
-impl FixedSizeMsg for HelloMsg {
-    type BytesArray = [u8; HelloMsg::SIZE];
+impl<C: CryptoSuite> FixedSizeMsg for HelloMsg<C> {
+    type Size = Sum![
+        C::VerificationKeySize, // identity
+        U32,                    // room_id
+        C::SignatureSize,       // signature
+    ];
     type ParseError = InvalidHelloMsg;
 
-    fn parse(input: &Self::BytesArray) -> Result<Self, Self::ParseError> {
-        let identity =
-            PublicKey::from_slice(&input[0..33]).map_err(InvalidHelloMsg::InvalidIdentity)?;
+    fn parse(input: &GenericArray<u8, Self::Size>) -> Result<Self, Self::ParseError> {
+        let identity_size = C::VerificationKeySize::to_usize();
+        let room_size = 32;
+
+        let identity = C::VerificationKey::from_bytes(&input[0..identity_size])
+            .map_err(|_| InvalidHelloMsg::InvalidIdentity)?;
 
         let mut room_id = [0u8; 32];
-        room_id.copy_from_slice(&input[33..33 + 32]);
+        room_id.copy_from_slice(&input[identity_size..identity_size + room_size]);
 
-        let signature = &input[33 + 32..];
-        let signature =
-            Signature::from_compact(&signature).map_err(InvalidHelloMsg::InvalidSignature)?;
+        let mut signature = GenericArray::<u8, C::SignatureSize>::default();
+        signature.copy_from_slice(&input[identity_size + room_size..]);
 
-        let message_hash = Sha256::digest(&room_id);
-        let message_hash = secp256k1::Message::from_slice(&message_hash)
-            .expect("sha256 output is a valid message");
-
-        SECP256K1
-            .verify(&message_hash, &signature, &identity)
-            .map_err(InvalidHelloMsg::InvalidSignature)?;
+        C::Digest::new()
+            .chain(&room_id)
+            .verify_signature(&identity, &signature)
+            .map_err(|_| InvalidHelloMsg::InvalidSignature)?;
 
         Ok(HelloMsg {
             identity,
@@ -62,12 +64,15 @@ impl FixedSizeMsg for HelloMsg {
         })
     }
 
-    fn to_bytes(&self) -> Self::BytesArray {
-        let mut msg = [0u8; HelloMsg::SIZE];
+    fn to_bytes(&self) -> GenericArray<u8, Self::Size> {
+        let identity_size = C::VerificationKeySize::to_usize();
+        let room_size = 32;
 
-        msg[0..33].copy_from_slice(&self.identity.serialize());
-        msg[33..33 + 32].copy_from_slice(&self.room_id);
-        msg[33 + 32..].copy_from_slice(&self.signature.serialize_compact());
+        let mut msg = GenericArray::<u8, Self::Size>::default();
+
+        msg[0..identity_size].copy_from_slice(&self.identity.to_bytes());
+        msg[identity_size..identity_size + room_size].copy_from_slice(&self.room_id);
+        msg[identity_size + room_size..].copy_from_slice(&self.signature);
 
         msg
     }
@@ -76,7 +81,7 @@ impl FixedSizeMsg for HelloMsg {
 #[derive(Debug, Error)]
 pub enum InvalidHelloMsg {
     #[error("party identity (public key) is invalid")]
-    InvalidIdentity(#[source] secp256k1::Error),
+    InvalidIdentity,
     #[error("invalid signature")]
-    InvalidSignature(#[source] secp256k1::Error),
+    InvalidSignature,
 }

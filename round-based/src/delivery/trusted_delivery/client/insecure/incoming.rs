@@ -362,12 +362,12 @@ mod incomings_tests {
     }
 
     struct DecryptionKeysBuilder<'pk> {
-        pk: &'pk SortedIdentities,
+        pk: &'pk SortedIdentities<PublicKey>,
         keys: HashMap<PublicKey, AesGcmDecryptionKey>,
     }
 
     impl<'pk> DecryptionKeysBuilder<'pk> {
-        pub fn new(pk: &'pk SortedIdentities) -> Self {
+        pub fn new(pk: &'pk SortedIdentities<PublicKey>) -> Self {
             Self {
                 pk,
                 keys: HashMap::default(),
@@ -386,7 +386,7 @@ mod incomings_tests {
 
     async fn test(
         i: u16,
-        parties: impl IdentityResolver + Unpin,
+        parties: impl IdentityResolver<Identity = PublicKey> + Unpin,
         decryption_keys: impl DecryptionKeys + Unpin,
         incoming_messages: &[(ForwardMsgHeader, Vec<u8>)],
         should_receive: &[Incoming<Vec<u8>>],
@@ -419,7 +419,9 @@ mod incomings_tests {
         let (pk, sk) = generate_parties_sk(2);
         let input = &[unencrypted_message(&sk[0], pk[1], b"hey party 1")];
         let output = &[message(0, b"hey party 1")];
-        test(1, pk, NoDecryption, input, output).await.unwrap()
+        test(1, pk, NoDecryption::new(), input, output)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -427,7 +429,9 @@ mod incomings_tests {
         let (pk, sk) = generate_parties_sk(2);
         let input = &[broadcast_message(&sk[0], b"hey everyone")];
         let output = &[message(0, b"hey everyone")];
-        test(1, pk, NoDecryption, input, output).await.unwrap()
+        test(1, pk, NoDecryption::new(), input, output)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -460,7 +464,9 @@ mod incomings_tests {
             encrypted_message(&outsider_ek, 0, &outsider_sk[0], pk[2], b"he wont find out"),
         ];
         let output = &[message(0, b"dont eat that forbidden fruit, children")];
-        test(2, pk, NoDecryption, input, output).await.unwrap()
+        test(2, pk, NoDecryption::new(), input, output)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]

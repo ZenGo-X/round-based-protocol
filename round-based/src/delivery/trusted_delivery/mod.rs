@@ -47,6 +47,7 @@
 #![allow(dead_code)] // TODO: remove
 
 pub mod client;
+mod generic_array_ext;
 mod messages;
-pub mod server;
+// pub mod server;
 // mod tls_handshake;

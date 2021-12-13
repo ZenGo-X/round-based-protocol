@@ -1,2 +1,2 @@
 mod identity_resolver;
-mod insecure;
+pub mod insecure;

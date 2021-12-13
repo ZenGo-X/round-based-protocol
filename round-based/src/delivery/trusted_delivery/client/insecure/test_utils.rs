@@ -6,7 +6,7 @@ use secp256k1::{PublicKey, SecretKey, SECP256K1};
 
 use crate::delivery::trusted_delivery::client::identity_resolver::SortedIdentities;
 
-pub fn generate_parties_sk(n: u16) -> (SortedIdentities, Vec<SecretKey>) {
+pub fn generate_parties_sk(n: u16) -> (SortedIdentities<PublicKey>, Vec<SecretKey>) {
     let generate_sk = || loop {
         let mut key = [0u8; 32];
         OsRng.fill_bytes(&mut key);

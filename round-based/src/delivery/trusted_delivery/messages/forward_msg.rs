@@ -1,36 +1,38 @@
 use std::convert::{TryFrom, TryInto};
 
-use secp256k1::{PublicKey, SecretKey, Signature, SECP256K1};
-use sha2::{Digest, Sha256};
+use generic_array::typenum::{Unsigned, U1, U2};
+use generic_array::GenericArray;
+use sha2::Digest;
 
 use thiserror::Error;
 
+use crate::delivery::trusted_delivery::client::insecure::crypto::{
+    CryptoSuite, DigestExt, InvalidSignature, PublicKey, SigningKey,
+};
+use crate::delivery::trusted_delivery::generic_array_ext::Sum;
+
 use super::{DataMsg, FixedSizeMsg};
 
-pub struct ForwardMsgHeader {
-    pub sender: PublicKey,
+pub struct ForwardMsgHeader<C: CryptoSuite> {
+    pub sender: C::VerificationKey,
     pub is_broadcast: bool,
-    pub signature: Signature,
+    pub signature: GenericArray<u8, C::SignatureSize>,
     pub data_len: u16,
 }
 
-impl ForwardMsgHeader {
-    pub const SIZE: usize = 33 // Sender identity
-        + 1  // is_broadcast flag
-        + 64 // Signature
-        + 2; // Data len (u16)
-
-    pub fn new(sender_identity_key: &SecretKey, recipient: Option<&PublicKey>, msg: &[u8]) -> Self {
-        let message_hash = Sha256::new()
+impl<C: CryptoSuite> ForwardMsgHeader<C> {
+    pub fn new(
+        sender_identity_key: &C::SigningKey,
+        recipient: Option<&C::VerificationKey>,
+        msg: &[u8],
+    ) -> Self {
+        let signature = C::Digest::new()
             .chain(&[u8::from(recipient.is_none())])
-            .chain(recipient.map(PublicKey::serialize).unwrap_or([0u8; 33]))
+            .chain(recipient.map(PublicKey::to_bytes).unwrap_or_default())
             .chain(msg)
-            .finalize();
-        let message_hash = secp256k1::Message::from_slice(&message_hash)
-            .expect("sha256 output is a valid secp256k1::Message");
-        let signature = SECP256K1.sign(&message_hash, sender_identity_key);
+            .sign_message(sender_identity_key);
         Self {
-            sender: PublicKey::from_secret_key(&SECP256K1, sender_identity_key),
+            sender: sender_identity_key.verification_key(),
             is_broadcast: recipient.is_none(),
             signature,
             data_len: msg.len().try_into().unwrap(),
@@ -39,40 +41,47 @@ impl ForwardMsgHeader {
 
     pub fn verify(
         &self,
-        recipient_identity: &PublicKey,
+        recipient_identity: &C::VerificationKey,
         msg: &[u8],
-    ) -> Result<(), secp256k1::Error> {
-        let message_hash = Sha256::new()
+    ) -> Result<(), InvalidSignature> {
+        C::Digest::new()
             .chain(&[u8::from(self.is_broadcast)])
             .chain(if !self.is_broadcast {
-                recipient_identity.serialize()
+                recipient_identity.to_bytes()
             } else {
-                [0u8; 33]
+                GenericArray::default()
             })
             .chain(msg)
-            .finalize();
-        let message_hash = secp256k1::Message::from_slice(&message_hash)
-            .expect("sha256 output is a valid secp256k1::Message");
-        SECP256K1.verify(&message_hash, &self.signature, &self.sender)
+            .verify_signature(recipient_identity, &self.signature)
     }
 }
 
-impl FixedSizeMsg for ForwardMsgHeader {
-    type BytesArray = [u8; ForwardMsgHeader::SIZE];
+impl<C: CryptoSuite> FixedSizeMsg for ForwardMsgHeader<C> {
+    type Size = Sum![
+        <C::VerificationKey as PublicKey>::Size, // Sender identity
+        U1,                                      // is_broadcast flag
+        C::SignatureSize,                        // Signature
+        U2,                                      // Data len (u16)
+    ];
     type ParseError = InvalidForwardMsgHeader;
 
-    fn parse(input: &Self::BytesArray) -> Result<Self, Self::ParseError> {
-        let sender = PublicKey::from_slice(&input[..33])
-            .map_err(InvalidForwardMsgHeader::InvalidSenderIdentity)?;
-        let is_broadcast = match input[33] {
+    fn parse(input: &GenericArray<u8, Self::Size>) -> Result<Self, Self::ParseError> {
+        let identity_size = C::VerificationKeySize::to_usize();
+        let signature_size = C::SignatureSize::to_usize();
+
+        let sender = C::VerificationKey::from_bytes(&input[..identity_size])
+            .map_err(|_| InvalidForwardMsgHeader::InvalidSenderIdentity)?;
+        let is_broadcast = match input[identity_size] {
             0 => false,
             1 => true,
             x => return Err(InvalidForwardMsgHeader::InvalidIsBroadcast(x)),
         };
-        let signature = Signature::from_compact(&input[33 + 1..33 + 1 + 64])
-            .map_err(InvalidForwardMsgHeader::InvalidSignature)?;
-        let data_len =
-            <[u8; 2]>::try_from(&input[33 + 1 + 64..]).expect("provided exactly 2 bytes");
+        let signature = GenericArray::<u8, C::SignatureSize>::from_slice(
+            &input[identity_size + 1..identity_size + 1 + signature_size],
+        )
+        .clone();
+        let data_len = <[u8; 2]>::try_from(&input[identity_size + 1 + signature_size..])
+            .expect("provided exactly 2 bytes");
         let data_len = u16::from_be_bytes(data_len);
 
         Ok(Self {
@@ -83,30 +92,34 @@ impl FixedSizeMsg for ForwardMsgHeader {
         })
     }
 
-    fn to_bytes(&self) -> Self::BytesArray {
-        let mut msg = [0u8; ForwardMsgHeader::SIZE];
+    fn to_bytes(&self) -> GenericArray<u8, Self::Size> {
+        let identity_size = C::VerificationKeySize::to_usize();
+        let signature_size = C::SignatureSize::to_usize();
 
-        msg[0..33].copy_from_slice(&self.sender.serialize());
-        msg[33] = u8::from(self.is_broadcast);
-        msg[33 + 1..33 + 1 + 64].copy_from_slice(&self.signature.serialize_compact());
-        msg[33 + 1 + 64..].copy_from_slice(&self.data_len.to_be_bytes());
+        let mut msg = GenericArray::<u8, Self::Size>::default();
+
+        msg[0..identity_size].copy_from_slice(&self.sender.to_bytes());
+        msg[identity_size] = u8::from(self.is_broadcast);
+        msg[identity_size + 1..identity_size + 1 + signature_size]
+            .copy_from_slice(self.signature.as_slice());
+        msg[identity_size + 1 + signature_size..].copy_from_slice(&self.data_len.to_be_bytes());
 
         msg
     }
 }
 
-pub struct ForwardMsg {
-    recipient_identity: PublicKey,
+pub struct ForwardMsg<C: CryptoSuite> {
+    recipient_identity: C::VerificationKey,
 }
 
-impl ForwardMsg {
-    pub fn new(recipient_identity: PublicKey) -> Self {
+impl<C: CryptoSuite> ForwardMsg<C> {
+    pub fn new(recipient_identity: C::VerificationKey) -> Self {
         Self { recipient_identity }
     }
 }
 
-impl DataMsg for ForwardMsg {
-    type Header = ForwardMsgHeader;
+impl<C: CryptoSuite> DataMsg for ForwardMsg<C> {
+    type Header = ForwardMsgHeader<C>;
     type ValidateError = InvalidForwardMsg;
 
     fn data_size(&self, header: &Self::Header) -> usize {
@@ -122,14 +135,14 @@ impl DataMsg for ForwardMsg {
         }
         header
             .verify(&self.recipient_identity, data)
-            .map_err(InvalidForwardMsg::InvalidSignature)
+            .map_err(|_| InvalidForwardMsg::InvalidSignature)
     }
 }
 
 #[derive(Debug, Error)]
 pub enum InvalidForwardMsgHeader {
     #[error("invalid sender identity")]
-    InvalidSenderIdentity(#[source] secp256k1::Error),
+    InvalidSenderIdentity,
     #[error("is_broadcast flag has unexpected value: {0} (expected 0 or 1)")]
     InvalidIsBroadcast(u8),
     #[error("invalid signature")]
@@ -144,5 +157,5 @@ pub enum InvalidForwardMsg {
         actual_len: usize,
     },
     #[error("signature doesn't match the message")]
-    InvalidSignature(#[source] secp256k1::Error),
+    InvalidSignature,
 }

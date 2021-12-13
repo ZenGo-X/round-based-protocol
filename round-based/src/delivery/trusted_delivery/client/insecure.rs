@@ -1,8 +1,8 @@
-mod acceptor;
-mod crypto;
-mod incoming;
-mod outgoing;
-mod p2p_handshake;
+// mod connector;
+pub mod crypto;
+// mod incoming;
+// mod outgoing;
+// mod p2p_handshake;
 #[cfg(test)]
 mod test_utils;
 

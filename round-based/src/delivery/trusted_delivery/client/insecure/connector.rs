@@ -29,8 +29,7 @@ pub struct Connect<P, IO> {
 }
 
 enum ConnectionState<IO> {
-    Handshake(TlsConnect<IO>),
-    SendHello(SendFixed<HelloMsg, TlsStream<IO>>),
+    SendHello(SendFixed<HelloMsg, IO>),
     Connected(TlsStream<IO>),
     Gone,
 }
