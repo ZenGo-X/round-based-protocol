@@ -87,25 +87,15 @@ where
             self.data_valid = false;
         }
 
-        let Self {
-            header,
-            header_buffer,
-            header_received,
-            data,
-            data_received,
-            data_limit,
-            data_valid,
-            channel,
-            parser,
-        } = &mut *self;
+        let this = &mut *self;
 
-        while *header_received < header_buffer.as_ref().len() {
-            let mut buf = ReadBuf::new(&mut header_buffer.as_mut()[*header_received..]);
-            ready!(Pin::new(&mut *channel).poll_read(cx, &mut buf))
+        while this.header_received < this.header_buffer.len() {
+            let mut buf = ReadBuf::new(&mut this.header_buffer[this.header_received..]);
+            ready!(Pin::new(&mut this.channel).poll_read(cx, &mut buf))
                 .map_err(ReceiveDataError::Io)?;
             let bytes_received = buf.filled().len();
             if bytes_received == 0 {
-                return if *header_received != 0 {
+                return if this.header_received != 0 {
                     Poll::Ready(Some(Err(ReceiveDataError::Io(
                         io::ErrorKind::UnexpectedEof.into(),
                     ))))
@@ -113,32 +103,32 @@ where
                     Poll::Ready(None)
                 };
             }
-            *header_received += bytes_received;
+            this.header_received += bytes_received;
         }
 
-        let header = match &*header {
+        let header = match &this.header {
             Some(header) => header,
             None => {
                 let parsed =
-                    M::Header::parse(&header_buffer).map_err(ReceiveDataError::ParseHeader)?;
-                header.get_or_insert(parsed)
+                    M::Header::parse(&this.header_buffer).map_err(ReceiveDataError::ParseHeader)?;
+                this.header.get_or_insert(parsed)
             }
         };
-        let data_len = parser.data_size(header);
+        let data_len = this.parser.data_size(header);
 
-        if data.len() < data_len {
-            if *data_limit < data_len {
+        if this.data.len() < data_len {
+            if this.data_limit < data_len {
                 return Poll::Ready(Some(Err(ReceiveDataError::TooLargeMessage {
                     len: data_len,
-                    limit: *data_limit,
+                    limit: this.data_limit,
                 })));
             }
-            data.resize(data_len, 0);
+            this.data.resize(data_len, 0);
         }
 
-        while *data_received < data_len {
-            let mut buf = ReadBuf::new(&mut data[*data_received..data_len]);
-            ready!(Pin::new(&mut *channel).poll_read(cx, &mut buf))
+        while this.data_received < data_len {
+            let mut buf = ReadBuf::new(&mut this.data[this.data_received..data_len]);
+            ready!(Pin::new(&mut this.channel).poll_read(cx, &mut buf))
                 .map_err(ReceiveDataError::Io)?;
             let bytes_received = buf.filled().len();
             if bytes_received == 0 {
@@ -146,13 +136,13 @@ where
                     io::ErrorKind::UnexpectedEof.into(),
                 ))));
             }
-            *data_received += bytes_received;
+            this.data_received += bytes_received;
         }
 
-        parser
-            .validate(header, &data[..data_len])
+        this.parser
+            .validate(header, &this.data[..data_len])
             .map_err(ReceiveDataError::ValidateData)?;
-        *data_valid = true;
+        this.data_valid = true;
 
         Poll::Ready(Some(Ok(())))
     }
@@ -178,14 +168,15 @@ pub enum ReceiveDataError<HE, DE> {
 mod test {
     // Receives 1 valid message
     #[test_case(Tough , &[msg(1)], SendAsIs => it all!(received(&[msg(1)]), TerminatedWith::Success); "receives a valid message through tough channel")]
+    #[test_case(Small , &[msg(1)], SendAsIs => it all!(received(&[msg(1)]), TerminatedWith::Success); "receives a valid message through small channel")]
     #[test_case(Medium, &[msg(1)], SendAsIs => it all!(received(&[msg(1)]), TerminatedWith::Success); "receives a valid message through medium channel")]
     // Receives 1 malformed message
-    #[test_case(Tough, &[msg(1).invalid_header()], SendAsIs => it all!(received(&[]), TerminatedWith::Error(ParseHeader)); "receives a message with malformed header")]
-    #[test_case(Tough, &[msg(1).invalid_data()], SendAsIs => it all!(received(&[]), TerminatedWith::Error(ValidateData)); "receives a message with malformed data")]
-    #[test_case(Tough, &[msg(1)], Truncate(90) => it all!(received(&[]), TerminatedWith::Error(UnexpectedEof)); "receives a message with truncated header")]
-    #[test_case(Tough, &[msg(1)], Truncate(10) => it all!(received(&[]), TerminatedWith::Error(UnexpectedEof)); "receives a message with truncated data")]
+    #[test_case(Small, &[msg(1).invalid_header()], SendAsIs => it all!(received(&[]), TerminatedWith::Error(ParseHeader)); "receives a message with malformed header")]
+    #[test_case(Small, &[msg(1).invalid_data()], SendAsIs => it all!(received(&[]), TerminatedWith::Error(ValidateData)); "receives a message with malformed data")]
+    #[test_case(Small, &[msg(1)], Truncate(90) => it all!(received(&[]), TerminatedWith::Error(UnexpectedEof)); "receives a message with truncated header")]
+    #[test_case(Small, &[msg(1)], Truncate(10) => it all!(received(&[]), TerminatedWith::Error(UnexpectedEof)); "receives a message with truncated data")]
     // Receives 3 valid messages
-    #[test_case(Tough , &[msg(1), msg(2), msg(3)], SendAsIs => it all!(received(&[msg(1), msg(2), msg(3)]), TerminatedWith::Success); "receives 3 valid messages through tough channel")]
+    #[test_case(Small , &[msg(1), msg(2), msg(3)], SendAsIs => it all!(received(&[msg(1), msg(2), msg(3)]), TerminatedWith::Success); "receives 3 valid messages through small channel")]
     #[test_case(Medium, &[msg(1), msg(2), msg(3)], SendAsIs => it all!(received(&[msg(1), msg(2), msg(3)]), TerminatedWith::Success); "receives 3 valid messages through medium channel")]
     #[test_case(Large , &[msg(1), msg(2), msg(3)], SendAsIs => it all!(received(&[msg(1), msg(2), msg(3)]), TerminatedWith::Success); "receives 3 valid messages through large channel")]
     // Receives 2 valid message and 1 malformed
@@ -361,8 +352,10 @@ mod test {
     }
 
     enum Capacity {
+        // Too small
+        Tough = 1,
         // Doesn't fit even a header
-        Tough = 10,
+        Small = 10,
         // Fits a single message
         Medium = 100,
         // Fits several messages
