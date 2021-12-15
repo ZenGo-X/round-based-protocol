@@ -2,15 +2,16 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::{ready, Stream};
+use generic_array::GenericArray;
 use tokio::io::{self, AsyncRead, ReadBuf};
 
 use thiserror::Error;
 
-use super::{DataMsg, DefaultArray, FixedSizeMsg};
+use super::{DataMsg, FixedSizeMsg};
 
 pub struct ReceiveData<M: DataMsg, IO> {
     header: Option<M::Header>,
-    header_buffer: <M::Header as FixedSizeMsg>::BytesArray,
+    header_buffer: GenericArray<u8, <M::Header as FixedSizeMsg>::Size>,
     header_received: usize,
     data: Vec<u8>,
     data_received: usize,
@@ -32,7 +33,7 @@ where
     pub fn with_capacity(channel: IO, parser: M, initial_capacity: usize) -> Self {
         Self {
             header: None,
-            header_buffer: DefaultArray::default_array(),
+            header_buffer: GenericArray::default(),
             header_received: 0,
             data: vec![0; initial_capacity],
             data_received: 0,
@@ -70,8 +71,9 @@ where
 
 impl<M, IO> Stream for ReceiveData<M, IO>
 where
-    M: DataMsg + Unpin,
+    M: DataMsg,
     IO: AsyncRead + Unpin,
+    GenericArray<u8, <M::Header as FixedSizeMsg>::Size>: Unpin,
 {
     type Item =
         Result<(), ReceiveDataError<<M::Header as FixedSizeMsg>::ParseError, M::ValidateError>>;
@@ -279,11 +281,13 @@ mod test {
     use test_case::test_case;
 
     use futures::StreamExt;
+    use generic_array::typenum::U20;
     use tokio::io::{self, AsyncWriteExt};
 
     use self::{Capacity::*, ModifyMsg::*, TerminationError::*};
     use super::{ReceiveData, ReceiveDataError};
     use crate::delivery::trusted_delivery::messages::{DataMsg, FixedSizeMsg};
+    use generic_array::GenericArray;
 
     #[derive(Debug, Clone, PartialEq)]
     struct Msg {
@@ -310,10 +314,10 @@ mod test {
     }
 
     impl FixedSizeMsg for Header {
-        type BytesArray = [u8; 20];
+        type Size = U20;
         type ParseError = ();
 
-        fn parse(input: &Self::BytesArray) -> Result<Self, Self::ParseError> {
+        fn parse(input: &GenericArray<u8, Self::Size>) -> Result<Self, Self::ParseError> {
             if input[0] != 1 {
                 // Header is malformed
                 return Err(());
@@ -327,8 +331,8 @@ mod test {
             })
         }
 
-        fn to_bytes(&self) -> Self::BytesArray {
-            let mut msg = [0u8; 20];
+        fn to_bytes(&self) -> GenericArray<u8, Self::Size> {
+            let mut msg = GenericArray::<u8, Self::Size>::default();
 
             msg[0] = u8::from(self.is_valid);
             msg[1..18].copy_from_slice(&self.middle);

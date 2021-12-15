@@ -2,8 +2,8 @@ use generic_array::{ArrayLength, GenericArray};
 
 mod forward_msg;
 mod hello_msg;
-// mod publish_msg;
-// mod receive_data;
+mod publish_msg;
+mod receive_data;
 // mod receive_fixed;
 // mod send_fixed;
 
@@ -12,7 +12,7 @@ mod hello_msg;
 
 pub trait FixedSizeMsg
 where
-    Self: Sized,
+    Self: Sized + Unpin,
 {
     /// Byte array that fits entire message, eg. `[u8; 33]`
     type Size: ArrayLength<u8>;
@@ -22,7 +22,10 @@ where
     fn to_bytes(&self) -> GenericArray<u8, Self::Size>;
 }
 
-pub trait DataMsg {
+pub trait DataMsg
+where
+    Self: Unpin,
+{
     type Header: FixedSizeMsg;
     type ValidateError;
 

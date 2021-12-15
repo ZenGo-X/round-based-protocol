@@ -30,19 +30,19 @@ pub trait CryptoSuite {
         SignatureSize = Self::SignatureSize,
     >;
 
-    type EncryptionKey: EncryptionKey;
-    type DecryptionKey: DecryptionKey;
+    type EncryptionKey: EncryptionKey + Unpin;
+    type DecryptionKey: DecryptionKey + Unpin;
     type SigningKey: SigningKey<
-        VerificationKey = Self::VerificationKey,
-        Signature = Self::Signature,
-        HashedMessageSize = Self::DigestOutputSize,
-    >;
+            VerificationKey = Self::VerificationKey,
+            Signature = Self::Signature,
+            HashedMessageSize = Self::DigestOutputSize,
+        > + Unpin;
     type VerificationKey: VerificationKey<
-        Size = Self::VerificationKeySize,
-        Signature = Self::Signature,
-        HashedMessageSize = Self::DigestOutputSize,
-    >;
-    type Signature: Serializable<Size = Self::SignatureSize, Error = InvalidSignature>;
+            Size = Self::VerificationKeySize,
+            Signature = Self::Signature,
+            HashedMessageSize = Self::DigestOutputSize,
+        > + Unpin;
+    type Signature: Serializable<Size = Self::SignatureSize, Error = InvalidSignature> + Unpin;
 
     type SignatureSize: ArrayLength<u8>;
     type VerificationKeySize: ArrayLength<u8>;

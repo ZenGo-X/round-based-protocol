@@ -1,3 +1,5 @@
+use generic_array::typenum::{Unsigned, U32};
+use generic_array::GenericArray;
 use sha2::Digest;
 
 use thiserror::Error;
@@ -8,8 +10,6 @@ use crate::delivery::trusted_delivery::client::insecure::crypto::{
 
 use super::FixedSizeMsg;
 use crate::delivery::trusted_delivery::generic_array_ext::Sum;
-use generic_array::typenum::{Unsigned, U32};
-use generic_array::GenericArray;
 
 pub type RoomId = [u8; 32];
 
