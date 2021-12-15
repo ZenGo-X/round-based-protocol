@@ -1,17 +1,19 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::fmt;
+use std::hash::Hash;
 
 use never::Never;
 use thiserror::Error;
 
 use generic_array::typenum::{U0, U12, U16};
 use generic_array::{ArrayLength, GenericArray};
-// use secp256k1::PublicKey;
+
+use phantom_type::PhantomType;
+use serde::{Deserialize, Serialize};
 
 use aes_gcm::{AeadInPlace, Aes256Gcm};
-use phantom_type::PhantomType;
 use sha2::Digest;
-use std::hash::Hash;
 
 pub mod aead;
 
@@ -29,32 +31,53 @@ pub trait CryptoSuite {
         Signature = Self::Signature,
         SignatureSize = Self::SignatureSize,
     >;
+    type KeyExchangeScheme: KeyExchangeScheme<
+        PublicKey = Self::KeyExchangeRemoteShare,
+        SecretKey = Self::KeyExchangeLocalShare,
+    >;
+    type Kdf: Kdf;
 
-    type EncryptionKey: EncryptionKey + Unpin;
-    type DecryptionKey: DecryptionKey + Unpin;
+    type EncryptionKey: EncryptionKey + Unpin + 'static;
+    type DecryptionKey: DecryptionKey + Unpin + 'static;
     type SigningKey: SigningKey<
             VerificationKey = Self::VerificationKey,
             Signature = Self::Signature,
             HashedMessageSize = Self::DigestOutputSize,
-        > + Unpin;
+        > + Unpin
+        + 'static;
     type VerificationKey: VerificationKey<
             Size = Self::VerificationKeySize,
             Signature = Self::Signature,
             HashedMessageSize = Self::DigestOutputSize,
-        > + Unpin;
-    type Signature: Serializable<Size = Self::SignatureSize, Error = InvalidSignature> + Unpin;
+        > + Eq
+        + Hash
+        + Clone
+        + Unpin
+        + 'static;
+    type Signature: Serializable<Size = Self::SignatureSize, Error = InvalidSignature>
+        + Unpin
+        + 'static;
+    type KeyExchangeLocalShare: Unpin + 'static;
+    type KeyExchangeRemoteShare: Serializable<Size = Self::KeyExchangeRemoteShareSize, Error = InvalidRemoteShare>
+        + Unpin
+        + 'static;
 
     type SignatureSize: ArrayLength<u8>;
     type VerificationKeySize: ArrayLength<u8>;
+    type KeyExchangeRemoteShareSize: ArrayLength<u8>;
 }
 
 pub trait KeyExchangeScheme {
-    type PublicKey;
+    type PublicKey: Serializable;
     type SecretKey;
 
     fn generate() -> (Self::PublicKey, Self::SecretKey);
     fn kdf<K: Kdf>(local: &Self::SecretKey, remote: &Self::PublicKey) -> K;
 }
+
+#[derive(Debug, Error)]
+#[error("remote share of key exchange scheme is invalid")]
+pub struct InvalidRemoteShare;
 
 pub trait Kdf: Sized {
     fn new(key_material: &[u8]) -> Result<Self, KdfError>;
@@ -104,10 +127,74 @@ pub trait VerificationKey: Serializable<Error = InvalidVerificationKey> {
 
 pub trait Serializable: Clone {
     type Size: ArrayLength<u8>;
-    type Error;
+    type Error: fmt::Display;
+
+    /// Name of serializable object, e.g. `secp256k1 point`
+    ///
+    /// It does not affect anything but debug and error messages
+    const NAME: &'static str;
 
     fn to_bytes(&self) -> GenericArray<u8, Self::Size>;
     fn from_bytes(bytes: &[u8]) -> Result<Self, Self::Error>;
+}
+
+/// Wraps [`Serializable`] and implements [serde] traits: [`Serialize`] and [`Deserialize`]
+pub struct Serde<S>(pub S);
+
+impl<S: Serializable> Serialize for Serde<S> {
+    fn serialize<M>(&self, serializer: M) -> Result<M::Ok, M::Error>
+    where
+        M: serde::ser::Serializer,
+    {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&hex::encode(self.0.to_bytes()))
+        } else {
+            serializer.serialize_bytes(&self.0.to_bytes())
+        }
+    }
+}
+
+impl<'de, S: Serializable> Deserialize<'de> for Serde<S> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        use std::marker::PhantomData;
+
+        use serde::de::{Error, Visitor};
+
+        struct TheVisitor<S>(PhantomData<S>);
+        impl<'de, S: Serializable> Visitor<'de> for TheVisitor<S> {
+            type Value = S;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "{}", S::NAME)
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                let mut bytes = GenericArray::<u8, S::Size>::default();
+                hex::decode_to_slice(v, &mut bytes).map_err(|_| E::custom("invalid hex string"))?;
+                S::from_bytes(&bytes).map_err(E::custom)
+            }
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                S::from_bytes(v).map_err(E::custom)
+            }
+        }
+
+        if deserializer.is_human_readable() {
+            deserializer
+                .deserialize_str(TheVisitor(PhantomData))
+                .map(Self)
+        } else {
+            deserializer
+                .deserialize_bytes(TheVisitor(PhantomData))
+                .map(Self)
+        }
+    }
 }
 
 #[derive(Error, Debug)]

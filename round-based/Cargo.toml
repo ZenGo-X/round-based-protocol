@@ -41,6 +41,7 @@ rand = { version = "0.8", optional = true }
 serde_bytes = { version = "0.11", optional = true }
 aead = { version = "0.4", optional = true }
 hkdf = { version = "0.11", optional = true }
+hex = { version = "0.4", optional = true, default-features = false }
 
 # unstable features
 rcgen = { version = "0.8", optional = true }
@@ -60,7 +61,7 @@ proptest = "1"
 default = ["tls"]
 derive = ["round-based-derive"]
 tls = ["rustls", "webpki", "tokio-rustls"]
-trusted-delivery = ["tls", "secp256k1", "secp256k1/serde", "sha2", "never", "generic-array", "aes-gcm", "rand", "serde_bytes", "aead", "hkdf"]
+trusted-delivery = ["tls", "secp256k1", "secp256k1/serde", "sha2", "never", "generic-array", "aes-gcm", "rand", "serde_bytes", "aead", "hkdf", "hex"]
 unstable = ["rcgen"]
 
 [[example]]

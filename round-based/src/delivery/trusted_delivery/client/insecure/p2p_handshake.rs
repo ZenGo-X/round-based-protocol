@@ -5,14 +5,16 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::{ready, Stream};
-use phantom_type::PhantomType;
-
-use secp256k1::PublicKey;
+use generic_array::typenum::Unsigned;
+use generic_array::GenericArray;
 
 use thiserror::Error;
 
 use crate::delivery::trusted_delivery::client::identity_resolver::IdentityResolver;
-use crate::delivery::trusted_delivery::client::insecure::crypto::EncryptionScheme;
+use crate::delivery::trusted_delivery::client::insecure::crypto::{
+    CryptoSuite, EncryptionScheme, Kdf, KeyExchangeScheme, Serde, Serializable,
+};
+use crate::delivery::trusted_delivery::generic_array_ext::Sum;
 use crate::delivery::OutgoingChannel;
 use crate::rounds::store::{RoundInput, RoundInputError};
 use crate::rounds::MessagesStore;
@@ -20,57 +22,55 @@ use crate::{Incoming, Outgoing, OutgoingDelivery};
 
 mod ephemeral;
 
-use self::ephemeral::{EphemeralKey, EphemeralPublicKey};
-
-pub struct Handshake<E, P, I, O: OutgoingChannel> {
+pub struct Handshake<C: CryptoSuite, P, I, O: OutgoingChannel> {
     i: u16,
     n: u16,
-    local_party_identity: PublicKey,
+    local_party_identity: C::VerificationKey,
     parties: P,
     // incomings: ReceiveAndParse<EphemeralPublicKey, Incomings<P, NoDecryption, I>>,
     // outgoings: Outgoings<P, NoEncryption, O>,
     incomings: I,
     outgoings: O,
-    ephemeral_keys: Vec<EphemeralKey>,
-    received_keys: Option<RoundInput<EphemeralPublicKey>>,
+    ephemeral_keys: Vec<(C::KeyExchangeRemoteShare, C::KeyExchangeLocalShare)>,
+    received_keys: Option<RoundInput<Serde<C::KeyExchangeRemoteShare>>>,
     state: State<O::MessageSize>,
-    _encryption_scheme: PhantomType<E>,
 }
 
 enum State<S> {
+    NotStarted,
     SendKeys { i: RecipientIndex, size: S },
     Flush,
     RecvKeys,
     Gone,
 }
 
-impl<E, P, I, O, IErr, OErr> Handshake<E, P, I, O>
+impl<C, P, I, O, IErr, OErr> Handshake<C, P, I, O>
 where
-    E: EncryptionScheme,
-    P: IdentityResolver + Unpin,
-    I: Stream<Item = Result<Incoming<EphemeralPublicKey>, IErr>> + Unpin,
-    O: OutgoingDelivery<EphemeralPublicKey, Error = OErr> + Unpin,
+    C: CryptoSuite,
+    P: IdentityResolver<Identity = C::VerificationKey> + Unpin,
+    I: Stream<Item = Result<Incoming<Serde<C::KeyExchangeRemoteShare>>, IErr>> + Unpin,
+    O: OutgoingDelivery<Serde<C::KeyExchangeRemoteShare>, Error = OErr> + Unpin,
     O::MessageSize: Copy,
 {
     pub fn new(
-        identity: PublicKey,
+        identity: C::VerificationKey,
         parties: P,
         // incomings: Incomings<P, NoDecryption, I>,
         // outgoings: Outgoings<P, NoEncryption, O>,
         incomings: I,
         outgoings: O,
-    ) -> Result<Self, ConstructError<OErr>> {
+    ) -> Result<Self, ConstructError> {
         let n = parties.number_of_parties();
         if n < 2 {
-            return Err(ConstructError::NumberOfPartiesTooSmall { n });
+            return Err(ConstructError::TooFewParties { n });
         }
         let local_party_index = parties
             .lookup_party_index(&identity)
-            .ok_or(ConstructError::PartyPkNotInTheList)?;
-        let ephemeral_keys = iter::repeat_with(EphemeralKey::generate)
+            .ok_or(ConstructError::LocalPartyIdentityNotInTheList)?;
+        let ephemeral_keys = iter::repeat_with(C::KeyExchangeScheme::generate)
             .take(usize::from(n))
             .collect::<Vec<_>>();
-        let mut handshake = Self {
+        Ok(Self {
             i: local_party_index,
             n,
             local_party_identity: identity,
@@ -79,44 +79,50 @@ where
             outgoings,
             ephemeral_keys,
             received_keys: Some(RoundInput::new(local_party_index, n)),
-            state: State::Gone,
-            _encryption_scheme: PhantomType::new(),
-        };
-        let recipient_index = RecipientIndex::new(local_party_index, n);
-        let state = State::SendKeys {
-            size: Pin::new(&handshake.outgoings)
-                .message_size(handshake.ith_handshake_message(&recipient_index).as_ref())
-                .map_err(ConstructError::EstimateMessageSize)?,
-            i: recipient_index,
-        };
-        handshake.state = state;
-        Ok(handshake)
+            state: State::NotStarted,
+        })
     }
 
-    /// We send (n-1) messages to all parties except ourselves. `i` is in range `[0; n-1)`
-    fn ith_handshake_message(&self, i: &RecipientIndex) -> Outgoing<EphemeralPublicKey> {
+    /// Returns handshake message that needs to be send next
+    fn next_handshake_message(
+        &self,
+        i: &RecipientIndex,
+    ) -> Outgoing<Serde<C::KeyExchangeRemoteShare>> {
         Outgoing {
             recipient: Some(i.recipient_index()),
-            msg: self.ephemeral_keys[usize::from(i.sequent_number())].public_key(),
+            msg: Serde(
+                self.ephemeral_keys[usize::from(i.sequent_number())]
+                    .0
+                    .clone(),
+            ),
         }
     }
 }
 
-impl<E, P, I, O, IErr, OErr> Future for Handshake<E, P, I, O>
+impl<C, P, I, O, IErr, OErr> Future for Handshake<C, P, I, O>
 where
-    E: EncryptionScheme,
-    P: IdentityResolver + Unpin,
-    I: Stream<Item = Result<Incoming<EphemeralPublicKey>, IErr>> + Unpin,
-    O: OutgoingDelivery<EphemeralPublicKey, Error = OErr> + Unpin,
+    C: CryptoSuite,
+    P: IdentityResolver<Identity = C::VerificationKey> + Unpin,
+    I: Stream<Item = Result<Incoming<Serde<C::KeyExchangeRemoteShare>>, IErr>> + Unpin,
+    O: OutgoingDelivery<Serde<C::KeyExchangeRemoteShare>, Error = OErr> + Unpin,
     O::MessageSize: Copy,
 {
-    type Output = Result<DerivedKeys<E>, HandshakeError<IErr, OErr>>;
+    type Output = Result<DerivedKeys<C>, HandshakeError<IErr, OErr>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = &mut *self;
 
         loop {
             this.state = match this.state {
+                State::NotStarted => {
+                    let recipient_index = RecipientIndex::initial(this.i, this.n);
+                    State::SendKeys {
+                        size: Pin::new(&this.outgoings)
+                            .message_size(this.next_handshake_message(&recipient_index).as_ref())
+                            .map_err(HandshakeError::EstimateMessageSize)?,
+                        i: recipient_index,
+                    }
+                }
                 State::SendKeys { i, size } => {
                     ready!(Pin::new(&mut this.outgoings).poll_ready(cx, &size)).map_err(|err| {
                         HandshakeError::ReserveSpaceInOutgoingsBuffer {
@@ -124,7 +130,7 @@ where
                             err,
                         }
                     })?;
-                    let ith_message = this.ith_handshake_message(&i);
+                    let ith_message = this.next_handshake_message(&i);
                     Pin::new(&mut this.outgoings)
                         .start_send(ith_message.as_ref())
                         .map_err(|err| HandshakeError::StartSending {
@@ -133,7 +139,7 @@ where
                         })?;
 
                     if let Some(i) = i.increment() {
-                        let next_msg = this.ith_handshake_message(&i);
+                        let next_msg = this.next_handshake_message(&i);
                         let size = Pin::new(&mut this.outgoings)
                             .as_ref()
                             .message_size(next_msg.as_ref())
@@ -153,16 +159,14 @@ where
                         .received_keys
                         .as_mut()
                         .ok_or(OccurredBug::ReceivedMessagesGone)?;
-                    let received_message: Incoming<EphemeralPublicKey> =
+                    let received_message: Incoming<Serde<C::KeyExchangeRemoteShare>> =
                         ready!(Pin::new(&mut this.incomings).poll_next(cx))
                             .ok_or(HandshakeError::RecvEof)?
                             .map_err(HandshakeError::Recv)?;
+                    let sender = received_message.sender;
 
                     received_keys.add_message(received_message).map_err(|err| {
-                        HandshakeError::PartySabotagedHandshake {
-                            party: received_message.sender,
-                            err,
-                        }
+                        HandshakeError::PartySabotagedHandshake { party: sender, err }
                     })?;
 
                     if !received_keys.wants_more() {
@@ -172,11 +176,14 @@ where
                             .ok_or(OccurredBug::ReceivedMessagesGone)?
                             .finish()
                             .map_err(OccurredBug::CannotExtractReceivedMessages)?;
-                        let derived_keys = DerivedKeys::<E>::derive(
+                        let derived_keys = DerivedKeys::<C>::derive(
                             &this.local_party_identity,
                             &this.parties,
-                            &this.ephemeral_keys,
-                            &received_ephemeral_keys.into_vec(),
+                            this.ephemeral_keys.iter().map(|(_pk, sk)| sk),
+                            received_ephemeral_keys
+                                .into_vec()
+                                .iter()
+                                .map(|Serde(remote)| remote),
                         )
                         .or(Err(HandshakeError::Kdf))?;
 
@@ -201,7 +208,7 @@ struct RecipientIndex {
 }
 
 impl RecipientIndex {
-    pub fn new(i: u16, n: u16) -> Self {
+    pub fn initial(i: u16, n: u16) -> Self {
         debug_assert!(n > 1);
         debug_assert!(i < n);
         Self { counter: 0, i, n }
@@ -229,20 +236,20 @@ impl RecipientIndex {
     }
 }
 
-pub struct DerivedKeys<E: EncryptionScheme> {
-    pub encryption_keys: HashMap<PublicKey, E::EncryptionKey>,
-    pub decryption_keys: HashMap<PublicKey, E::DecryptionKey>,
+pub struct DerivedKeys<C: CryptoSuite> {
+    pub encryption_keys: HashMap<C::VerificationKey, C::EncryptionKey>,
+    pub decryption_keys: HashMap<C::VerificationKey, C::DecryptionKey>,
 }
 
-impl<E: EncryptionScheme> DerivedKeys<E> {
-    fn derive<P>(
-        local_party_identity: &PublicKey,
+impl<C: CryptoSuite> DerivedKeys<C> {
+    fn derive<'k, P>(
+        local_party_identity: &C::VerificationKey,
         parties: &P,
-        ephemeral_keys: &[EphemeralKey],
-        received_ephemeral_keys: &[EphemeralPublicKey],
+        ephemeral_keys: impl IntoIterator<Item = &'k C::KeyExchangeLocalShare>,
+        received_ephemeral_keys: impl IntoIterator<Item = &'k C::KeyExchangeRemoteShare>,
     ) -> Result<Self, KdfError>
     where
-        P: IdentityResolver,
+        P: IdentityResolver<Identity = C::VerificationKey>,
     {
         let mut encryption_keys = HashMap::new();
         let mut decryption_keys = HashMap::new();
@@ -253,20 +260,28 @@ impl<E: EncryptionScheme> DerivedKeys<E> {
             .zip(ephemeral_keys)
             .zip(received_ephemeral_keys)
         {
-            let encryption_key_label = KdfLabel::new(local_party_identity, &remote_party_identity);
-            let decryption_key_label = KdfLabel::new(&remote_party_identity, local_party_identity);
+            let encryption_key_label =
+                KdfLabel::<C>::new(local_party_identity, &remote_party_identity);
+            let decryption_key_label =
+                KdfLabel::<C>::new(&remote_party_identity, local_party_identity);
 
-            let mut encryption_key = E::Key::default();
-            let mut decryption_key = E::Key::default();
+            let mut encryption_key = <C::EncryptionScheme as EncryptionScheme>::Key::default();
+            let mut decryption_key = <C::EncryptionScheme as EncryptionScheme>::Key::default();
 
-            let kdf = ephemeral_key.hkdf(party_ephemeral);
+            let kdf = C::KeyExchangeScheme::kdf::<C::Kdf>(ephemeral_key, party_ephemeral);
             kdf.expand(encryption_key_label.as_bytes(), encryption_key.as_mut())
                 .or(Err(KdfError))?;
             kdf.expand(decryption_key_label.as_bytes(), decryption_key.as_mut())
                 .or(Err(KdfError))?;
 
-            encryption_keys.insert(remote_party_identity, E::encryption_key(&encryption_key));
-            decryption_keys.insert(remote_party_identity, E::decryption_key(&decryption_key));
+            encryption_keys.insert(
+                remote_party_identity.clone(),
+                C::EncryptionScheme::encryption_key(&encryption_key),
+            );
+            decryption_keys.insert(
+                remote_party_identity,
+                C::EncryptionScheme::decryption_key(&decryption_key),
+            );
         }
 
         Ok(Self {
@@ -276,17 +291,24 @@ impl<E: EncryptionScheme> DerivedKeys<E> {
     }
 }
 
-struct KdfLabel {
-    label: [u8; 33 + 33],
+struct KdfLabel<C: CryptoSuite> {
+    label: GenericArray<u8, KdfLabelSize<C>>,
 }
 
-impl KdfLabel {
+type KdfLabelSize<C> = Sum![
+    <C as CryptoSuite>::VerificationKeySize,
+    <C as CryptoSuite>::VerificationKeySize,
+];
+
+impl<C: CryptoSuite> KdfLabel<C> {
     /// Takes public identity of party who encrypts messages, public identity of party who decrypts
     /// them and derives KDF label
-    pub fn new(encryptor: &PublicKey, decryptor: &PublicKey) -> Self {
-        let mut label = [0u8; 33 + 33];
-        label[0..33].copy_from_slice(&encryptor.serialize());
-        label[33..].copy_from_slice(&decryptor.serialize());
+    pub fn new(encryptor: &C::VerificationKey, decryptor: &C::VerificationKey) -> Self {
+        let identity_size = C::VerificationKeySize::to_usize();
+
+        let mut label = GenericArray::<u8, KdfLabelSize<C>>::default();
+        label[0..identity_size].copy_from_slice(&encryptor.to_bytes());
+        label[identity_size..].copy_from_slice(&decryptor.to_bytes());
         Self { label }
     }
 
@@ -296,15 +318,13 @@ impl KdfLabel {
 }
 
 #[derive(Debug, Error)]
-pub enum ConstructError<OErr> {
+pub enum ConstructError {
     #[error("local party public key is not in the list of parties public keys")]
-    PartyPkNotInTheList,
+    LocalPartyIdentityNotInTheList,
     #[error("number of participants is too small: n={n}")]
-    NumberOfPartiesTooSmall { n: u16 },
+    TooFewParties { n: u16 },
     #[error("party index out of bounds: i={i}, n={n}")]
     IncorrectPartyIndex { i: u16, n: u16 },
-    #[error("cannot estimate size of handshake message")]
-    EstimateMessageSize(#[source] OErr),
 }
 
 #[derive(Debug, Error)]
