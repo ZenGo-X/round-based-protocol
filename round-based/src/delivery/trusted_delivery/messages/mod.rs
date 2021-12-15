@@ -4,7 +4,7 @@ mod forward_msg;
 mod hello_msg;
 mod publish_msg;
 mod receive_data;
-// mod receive_fixed;
+mod receive_fixed;
 // mod send_fixed;
 
 // pub use self::{forward_msg::*, hello_msg::*, publish_msg::*};

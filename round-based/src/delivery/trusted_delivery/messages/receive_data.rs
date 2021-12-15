@@ -352,7 +352,7 @@ mod test {
     }
 
     enum Capacity {
-        // Too small
+        // Sends messages byte by byte
         Tough = 1,
         // Doesn't fit even a header
         Small = 10,

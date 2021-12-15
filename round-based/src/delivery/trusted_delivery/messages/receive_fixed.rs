@@ -1,17 +1,18 @@
+use std::io::Error;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::{ready, Stream};
+use generic_array::GenericArray;
 use tokio::io::{self, AsyncRead, ReadBuf};
 
 use thiserror::Error;
 
-use super::{DefaultArray, FixedSizeMsg};
-use std::io::Error;
+use super::FixedSizeMsg;
 
 pub struct ReceiveFixed<M: FixedSizeMsg, IO> {
     channel: IO,
-    buffer: M::BytesArray,
+    buffer: GenericArray<u8, M::Size>,
     buffer_written: usize,
 }
 
@@ -23,7 +24,7 @@ where
     pub fn new(channel: IO) -> Self {
         Self {
             channel,
-            buffer: DefaultArray::default_array(),
+            buffer: GenericArray::default(),
             buffer_written: 0,
         }
     }
@@ -37,22 +38,19 @@ impl<M, IO> Stream for ReceiveFixed<M, IO>
 where
     M: FixedSizeMsg,
     IO: AsyncRead + Unpin,
+    GenericArray<u8, M::Size>: Unpin,
 {
     type Item = Result<M, ReceiveFixedError<M::ParseError>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let Self {
-            channel,
-            buffer,
-            buffer_written,
-        } = &mut *self;
-        while *buffer_written < buffer.as_ref().len() {
-            let mut buf = ReadBuf::new(&mut buffer.as_mut()[*buffer_written..]);
-            ready!(Pin::new(&mut *channel).poll_read(cx, &mut buf))
+        let this = &mut *self;
+        while this.buffer_written < this.buffer.len() {
+            let mut buf = ReadBuf::new(&mut this.buffer[this.buffer_written..]);
+            ready!(Pin::new(&mut this.channel).poll_read(cx, &mut buf))
                 .map_err(ReceiveFixedError::Io)?;
             let bytes_received = buf.filled().len();
             if bytes_received == 0 {
-                return if *buffer_written != 0 {
+                return if this.buffer_written != 0 {
                     Poll::Ready(Some(Err(ReceiveFixedError::Io(
                         io::ErrorKind::UnexpectedEof.into(),
                     ))))
@@ -60,10 +58,10 @@ where
                     Poll::Ready(None)
                 };
             }
-            *buffer_written += bytes_received;
+            this.buffer_written += bytes_received;
         }
 
-        *buffer_written = 0;
+        this.buffer_written = 0;
         Poll::Ready(Some(
             M::parse(&self.buffer).map_err(ReceiveFixedError::Parse),
         ))
@@ -96,6 +94,7 @@ mod test {
     use std::fmt;
 
     use futures::StreamExt;
+    use generic_array::typenum::U256;
     use tokio::io::{self, AsyncWriteExt};
 
     use hamcrest2::core::MatchResult;
@@ -107,14 +106,17 @@ mod test {
     use super::{ReceiveFixed, ReceiveFixedError};
 
     use self::{Capacity::*, ModifyMsg::*, TerminationError::*};
+    use generic_array::GenericArray;
 
     // Receiving 1 message
     #[test_case(Medium, &[msg(1)]        , SendAsIs => it all!(received(&[msg(1)]), TerminatedWith::Success); "receives a single message")]
+    #[test_case(Small , &[msg(1)]        , SendAsIs => it all!(received(&[msg(1)]), TerminatedWith::Success); "receives a single message through a small channel")]
     #[test_case(Tough , &[msg(1)]        , SendAsIs => it all!(received(&[msg(1)]), TerminatedWith::Success); "receives a single message through a tough channel")]
     #[test_case(Medium, &[invalid_msg(1)], SendAsIs => it all!(received(&[]), TerminatedWith::Error(Parse)) ; "receives an invalid message")]
     #[test_case(Medium, &[msg(1)]        , Truncate(10) => it all!(received(&[]), TerminatedWith::Error(UnexpectedEof)); "channel got closed before receiving complete")]
     // Receiving 3 valid messages
     #[test_case(Medium, &[msg(1), msg(2), msg(3)], SendAsIs => it all!(received(&[msg(1), msg(2), msg(3)]), TerminatedWith::Success); "receives 3 messages through a normal channel")]
+    #[test_case(Small , &[msg(1), msg(2), msg(3)], SendAsIs => it all!(received(&[msg(1), msg(2), msg(3)]), TerminatedWith::Success); "receives 3 messages through a small channel")]
     #[test_case(Tough , &[msg(1), msg(2), msg(3)], SendAsIs => it all!(received(&[msg(1), msg(2), msg(3)]), TerminatedWith::Success); "receives 3 messages through a tough channel")]
     #[test_case(Large , &[msg(1), msg(2), msg(3)], SendAsIs => it all!(received(&[msg(1), msg(2), msg(3)]), TerminatedWith::Success); "receives 3 messages through a large channel")]
     // Receiving two valid messages and then one malformed
@@ -176,40 +178,44 @@ mod test {
     }
 
     #[derive(Clone, Debug, PartialEq)]
-    struct TestMsg([u8; 256]);
+    struct TestMsg(GenericArray<u8, U256>);
     impl FixedSizeMsg for TestMsg {
-        type BytesArray = [u8; 256];
+        type Size = U256;
         type ParseError = ();
-        fn parse(raw: &Self::BytesArray) -> Result<Self, Self::ParseError> {
+        fn parse(raw: &GenericArray<u8, Self::Size>) -> Result<Self, Self::ParseError> {
             if raw.starts_with(b"valid msg") {
-                Ok(Self(*raw))
+                Ok(Self(raw.clone()))
             } else {
                 Err(())
             }
         }
-        fn to_bytes(&self) -> Self::BytesArray {
-            self.0
+        fn to_bytes(&self) -> GenericArray<u8, Self::Size> {
+            self.0.clone()
         }
     }
 
     // Produces a good valid message
     fn msg(fill_byte: u8) -> TestMsg {
-        let mut msg = [fill_byte; 256];
+        let mut msg = GenericArray::<u8, U256>::default();
         msg[0..9].copy_from_slice(b"valid msg");
+        msg[9..].iter_mut().for_each(|x| *x = fill_byte);
         TestMsg(msg)
     }
 
     /// Produces malformed message that cannot be parsed
     fn invalid_msg(fill_byte: u8) -> TestMsg {
-        let mut msg = [fill_byte; 256];
+        let mut msg = GenericArray::<u8, U256>::default();
         msg[0..11].copy_from_slice(b"invalid msg");
+        msg[9..].iter_mut().for_each(|x| *x = fill_byte);
         TestMsg(msg)
     }
 
     #[repr(usize)]
     enum Capacity {
-        // Doesn't even close to fit a single message
-        Tough = 10,
+        // Sends messages byte by byte
+        Tough = 1,
+        // Not even close to fit a single message
+        Small = 10,
         // Fits single message
         Medium = 256,
         // Fits several messages
