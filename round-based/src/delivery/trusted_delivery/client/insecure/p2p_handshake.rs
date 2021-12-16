@@ -386,8 +386,8 @@ mod tests {
     use rand::rngs::OsRng;
     use rand::RngCore;
 
-    use crate::delivery::trusted_delivery::client::insecure::crypto::default_suite::aead::AeadEncryptionScheme;
-    use crate::delivery::trusted_delivery::client::insecure::p2p_handshake::ephemeral::EphemeralPublicKey;
+    use crate::delivery::trusted_delivery::client::insecure::crypto::default_suite::DefaultSuite;
+    use crate::delivery::trusted_delivery::client::insecure::crypto::{CryptoSuite, Serde};
     use crate::delivery::trusted_delivery::client::insecure::test_utils::generate_parties_sk;
     use crate::simulation::Simulation;
     use crate::Delivery;
@@ -397,13 +397,15 @@ mod tests {
         DecryptionKey, EncryptionKey,
     };
 
-    type EncryptionScheme = AeadEncryptionScheme<aes_gcm::Aes256Gcm>;
-
     #[tokio::test]
-    async fn simulated_two_party_handshake() {
-        let (pk, _sk) = generate_parties_sk(2);
+    async fn simulated_two_party_handshake_default_crypto_suite() {
+        simulated_two_party_handshake::<DefaultSuite>().await
+    }
 
-        let mut simulation = Simulation::<EphemeralPublicKey>::new();
+    async fn simulated_two_party_handshake<C: CryptoSuite>() {
+        let (pk, _sk) = generate_parties_sk::<C>(2);
+
+        let mut simulation = Simulation::<Serde<C::KeyExchangeRemoteShare>>::new();
         let party1 = simulation.connect_new_party();
         let party2 = simulation.connect_new_party();
 
@@ -411,11 +413,9 @@ mod tests {
         let (party2_in, party2_out) = party2.split();
 
         let handshake1 =
-            Handshake::<EncryptionScheme, _, _, _>::new(pk[0], pk.clone(), party1_in, party1_out)
-                .unwrap();
+            Handshake::<C, _, _, _>::new(pk[0].clone(), pk.clone(), party1_in, party1_out).unwrap();
         let handshake2 =
-            Handshake::<EncryptionScheme, _, _, _>::new(pk[1], pk.clone(), party2_in, party2_out)
-                .unwrap();
+            Handshake::<C, _, _, _>::new(pk[1].clone(), pk.clone(), party2_in, party2_out).unwrap();
 
         let (mut keys1, mut keys2) = futures::future::try_join(handshake1, handshake2)
             .await
@@ -471,24 +471,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn simulated_handshake_among_many_parties() {
+    async fn simulated_handshake_among_many_parties_default_crypto_suite() {
         for n in 2..=10 {
-            simulated_n_parties_handshake(n).await
+            simulated_n_parties_handshake::<DefaultSuite>(n).await
         }
     }
 
-    async fn simulated_n_parties_handshake(n: u16) {
-        let (pk, _sk) = generate_parties_sk(n);
+    async fn simulated_n_parties_handshake<C: CryptoSuite>(n: u16) {
+        let (pk, _sk) = generate_parties_sk::<C>(n);
 
         let mut simulation =
-            Simulation::<EphemeralPublicKey>::with_capacity(usize::from(n * (n - 1)));
+            Simulation::<Serde<C::KeyExchangeRemoteShare>>::with_capacity(usize::from(n * (n - 1)));
 
         let parties = (0..n).zip(iter::repeat_with(|| simulation.connect_new_party()));
 
         let handshakes = parties.map(|(i, party)| {
             let (party_in, party_out) = party.split();
-            Handshake::<EncryptionScheme, _, _, _>::new(
-                pk[usize::from(i)],
+            Handshake::<C, _, _, _>::new(
+                pk[usize::from(i)].clone(),
                 pk.clone(),
                 party_in,
                 party_out,

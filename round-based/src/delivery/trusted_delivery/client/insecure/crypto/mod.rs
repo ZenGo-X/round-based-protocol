@@ -1,10 +1,8 @@
 use std::collections::HashMap;
-use std::convert::Infallible;
 use std::fmt;
 use std::hash::Hash;
 
-use aes_gcm::{AeadInPlace, Aes256Gcm};
-use generic_array::typenum::{U0, U12, U16};
+use generic_array::typenum::U0;
 use generic_array::{ArrayLength, GenericArray};
 use never::Never;
 use phantom_type::PhantomType;
@@ -34,31 +32,49 @@ pub trait CryptoSuite {
     >;
     type Kdf: Kdf;
 
-    type EncryptionKey: EncryptionKey + Unpin + 'static;
-    type DecryptionKey: DecryptionKey + Unpin + 'static;
+    type EncryptionKey: EncryptionKey<TagSize = Self::EncryptionTagSize>
+        + Send
+        + Sync
+        + Unpin
+        + 'static;
+    type DecryptionKey: DecryptionKey<TagSize = Self::EncryptionTagSize>
+        + Send
+        + Sync
+        + Unpin
+        + 'static;
     type SigningKey: SigningKey<
             VerificationKey = Self::VerificationKey,
             Signature = Self::Signature,
             HashedMessageSize = Self::DigestOutputSize,
-        > + Unpin
+        > + Send
+        + Sync
+        + Unpin
         + 'static;
     type VerificationKey: VerificationKey<
             Size = Self::VerificationKeySize,
             Signature = Self::Signature,
             HashedMessageSize = Self::DigestOutputSize,
         > + Eq
+        + Ord
         + Hash
         + Clone
+        + Send
+        + Sync
         + Unpin
         + 'static;
     type Signature: Serializable<Size = Self::SignatureSize, Error = InvalidSignature>
+        + Send
+        + Sync
         + Unpin
         + 'static;
-    type KeyExchangeLocalShare: Unpin + 'static;
+    type KeyExchangeLocalShare: Send + Sync + Unpin + 'static;
     type KeyExchangeRemoteShare: Serializable<Size = Self::KeyExchangeRemoteShareSize, Error = InvalidRemoteShare>
+        + Send
+        + Sync
         + Unpin
         + 'static;
 
+    type EncryptionTagSize: ArrayLength<u8>;
     type SignatureSize: ArrayLength<u8>;
     type VerificationKeySize: ArrayLength<u8>;
     type KeyExchangeRemoteShareSize: ArrayLength<u8>;
@@ -136,6 +152,7 @@ pub trait Serializable: Clone {
 }
 
 /// Wraps [`Serializable`] and implements [serde] traits: [`Serialize`] and [`Deserialize`]
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct Serde<S>(pub S);
 
 impl<S: Serializable> Serialize for Serde<S> {
@@ -252,26 +269,31 @@ pub trait EncryptionScheme {
 
 pub trait EncryptionKey {
     type TagSize: ArrayLength<u8>;
-    type Error;
 
     fn encrypt(
         &mut self,
         associated_data: &[u8],
         buffer: &mut [u8],
-    ) -> Result<GenericArray<u8, Self::TagSize>, Self::Error>;
+    ) -> Result<GenericArray<u8, Self::TagSize>, EncryptionError>;
 }
 
 pub trait DecryptionKey {
     type TagSize: ArrayLength<u8>;
-    type Error;
 
     fn decrypt(
         &mut self,
         associated_data: &[u8],
         buffer: &mut [u8],
         tag: &GenericArray<u8, Self::TagSize>,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<(), DecryptionError>;
 }
+
+#[derive(Debug, Error, Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[error("encryption failed")]
+pub struct EncryptionError;
+#[derive(Debug, Error, Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[error("decryption failed")]
+pub struct DecryptionError;
 
 pub trait EncryptionKeys {
     type Identity;
@@ -369,108 +391,25 @@ impl<I> DecryptionKeys for NoDecryption<I> {
 
 impl EncryptionKey for Never {
     type TagSize = U0;
-    type Error = Infallible;
 
     fn encrypt(
         &mut self,
         _associated_data: &[u8],
         _buffer: &mut [u8],
-    ) -> Result<GenericArray<u8, Self::TagSize>, Self::Error> {
+    ) -> Result<GenericArray<u8, Self::TagSize>, EncryptionError> {
         self.into_any()
     }
 }
 
 impl DecryptionKey for Never {
     type TagSize = U0;
-    type Error = Infallible;
 
     fn decrypt(
         &mut self,
         _associated_data: &[u8],
         _buffer: &mut [u8],
         _tag: &GenericArray<u8, Self::TagSize>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), DecryptionError> {
         self.into_any()
     }
-}
-
-#[cfg_attr(test, derive(Clone))]
-pub struct AesGcmEncryptionKey {
-    counter: u64,
-    key: Aes256Gcm,
-}
-
-pub struct AesGcmDecryptionKey {
-    counter: u64,
-    key: Aes256Gcm,
-}
-
-impl AesGcmEncryptionKey {
-    #[cfg(test)]
-    pub fn new(counter: u64, key: Aes256Gcm) -> Self {
-        Self { counter, key }
-    }
-}
-
-impl AesGcmDecryptionKey {
-    #[cfg(test)]
-    pub fn new(counter: u64, key: Aes256Gcm) -> Self {
-        Self { counter, key }
-    }
-}
-
-impl EncryptionKey for AesGcmEncryptionKey {
-    type TagSize = U16;
-    type Error = aes_gcm::Error;
-
-    fn encrypt(
-        &mut self,
-        associated_data: &[u8],
-        buffer: &mut [u8],
-    ) -> Result<GenericArray<u8, Self::TagSize>, Self::Error> {
-        let mut nonce = GenericArray::<u8, U12>::default();
-        nonce.as_mut_slice()[..8].copy_from_slice(&self.counter.to_be_bytes());
-        self.counter.checked_add(1).expect("counter overflow");
-        self.key
-            .encrypt_in_place_detached(&nonce, associated_data, buffer)
-    }
-}
-
-impl DecryptionKey for AesGcmDecryptionKey {
-    type TagSize = U16;
-    type Error = aes_gcm::Error;
-
-    fn decrypt(
-        &mut self,
-        associated_data: &[u8],
-        buffer: &mut [u8],
-        tag: &GenericArray<u8, Self::TagSize>,
-    ) -> Result<(), Self::Error> {
-        let mut nonce = GenericArray::<u8, U12>::default();
-        nonce.as_mut_slice()[..8].copy_from_slice(&self.counter.to_be_bytes());
-        self.key
-            .decrypt_in_place_detached(&nonce, associated_data, buffer, tag)?;
-        self.counter += 1;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-pub fn random_aes_gcm_key() -> (AesGcmEncryptionKey, AesGcmDecryptionKey) {
-    use aes_gcm::NewAead;
-    use generic_array::typenum::U32;
-    use rand::rngs::OsRng;
-    use rand::RngCore;
-
-    let mut key = GenericArray::<u8, U32>::default();
-    OsRng.fill_bytes(key.as_mut_slice());
-    let encryption_key = AesGcmEncryptionKey {
-        counter: 0,
-        key: Aes256Gcm::new(&key),
-    };
-    let decryption_key = AesGcmDecryptionKey {
-        counter: 0,
-        key: Aes256Gcm::new(&key),
-    };
-    (encryption_key, decryption_key)
 }

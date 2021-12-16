@@ -24,7 +24,7 @@ pub struct Scalar<P> {
     _purpose: PhantomType<P>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Point<P> {
     pub point: secp256k1::PublicKey,
     _purpose: PhantomType<P>,
@@ -33,9 +33,9 @@ pub struct Point<P> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Signature(pub secp256k1::Signature);
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Signing(Never);
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct KeyExchange(Never);
 
 impl KeyExchangeScheme for Secp256k1 {

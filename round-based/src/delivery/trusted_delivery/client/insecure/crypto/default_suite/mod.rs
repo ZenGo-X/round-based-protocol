@@ -1,7 +1,7 @@
 use generic_array::typenum;
 use never::Never;
 
-use super::CryptoSuite;
+use super::{CryptoSuite, EncryptionKey};
 
 pub mod aead;
 pub mod elliptic;
@@ -32,6 +32,7 @@ impl CryptoSuite for DefaultSuite {
     type KeyExchangeLocalShare = elliptic::Scalar<elliptic::KeyExchange>;
     type KeyExchangeRemoteShare = elliptic::Point<elliptic::KeyExchange>;
 
+    type EncryptionTagSize = <Self::EncryptionKey as EncryptionKey>::TagSize;
     type SignatureSize = typenum::U64;
     type VerificationKeySize = typenum::U33;
     type KeyExchangeRemoteShareSize = typenum::U33;

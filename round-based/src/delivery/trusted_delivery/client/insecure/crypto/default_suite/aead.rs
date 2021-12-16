@@ -4,7 +4,7 @@ use never::Never;
 use phantom_type::PhantomType;
 
 use crate::delivery::trusted_delivery::client::insecure::crypto::{
-    DecryptionKey, EncryptionKey, EncryptionScheme,
+    DecryptionError, DecryptionKey, EncryptionError, EncryptionKey, EncryptionScheme,
 };
 
 pub struct AeadEncryptionScheme<K> {
@@ -65,17 +65,17 @@ where
     K: AeadInPlace,
 {
     type TagSize = K::TagSize;
-    type Error = aead::Error;
 
     fn encrypt(
         &mut self,
         associated_data: &[u8],
         buffer: &mut [u8],
-    ) -> Result<GenericArray<u8, Self::TagSize>, Self::Error> {
-        let counter = self.counter.clone().ok_or(aead::Error)?;
-        let tag =
-            self.key
-                .encrypt_in_place_detached(counter.to_bytes(), associated_data, buffer)?;
+    ) -> Result<GenericArray<u8, Self::TagSize>, EncryptionError> {
+        let counter = self.counter.clone().ok_or(EncryptionError)?;
+        let tag = self
+            .key
+            .encrypt_in_place_detached(counter.to_bytes(), associated_data, buffer)
+            .or(Err(EncryptionError))?;
         self.counter = counter.checked_increment();
         Ok(tag)
     }
@@ -86,17 +86,17 @@ where
     K: AeadInPlace,
 {
     type TagSize = K::TagSize;
-    type Error = aead::Error;
 
     fn decrypt(
         &mut self,
         associated_data: &[u8],
         buffer: &mut [u8],
         tag: &GenericArray<u8, Self::TagSize>,
-    ) -> Result<(), Self::Error> {
-        let counter = self.counter.clone().ok_or(aead::Error)?;
+    ) -> Result<(), DecryptionError> {
+        let counter = self.counter.clone().ok_or(DecryptionError)?;
         self.key
-            .decrypt_in_place_detached(counter.to_bytes(), associated_data, buffer, tag)?;
+            .decrypt_in_place_detached(counter.to_bytes(), associated_data, buffer, tag)
+            .or(Err(DecryptionError))?;
         self.counter = counter.checked_increment();
         Ok(())
     }
@@ -177,11 +177,12 @@ mod aead_key_tests {
     use rand::rngs::OsRng;
     use rand::{Rng, RngCore};
 
+    use crate::delivery::trusted_delivery::client::insecure::crypto::default_suite::DefaultSuite;
     use crate::delivery::trusted_delivery::client::insecure::crypto::{
-        DecryptionKey, EncryptionKey, EncryptionScheme,
+        CryptoSuite, DecryptionKey, EncryptionKey, EncryptionScheme,
     };
 
-    type EncryptionScheme = super::AeadEncryptionScheme<aes_gcm::Aes256Gcm>;
+    type DefaultEncryptionScheme = <DefaultSuite as CryptoSuite>::EncryptionScheme;
 
     fn generate_keys<S: EncryptionScheme, R: RngCore>(
         rng: &mut R,
@@ -199,7 +200,7 @@ mod aead_key_tests {
     fn encrypts_decrypts() {
         let mut rng = OsRng;
 
-        let (mut ek, mut dk) = generate_keys::<EncryptionScheme, _>(&mut rng);
+        let (mut ek, mut dk) = generate_keys::<DefaultEncryptionScheme, _>(&mut rng);
 
         let mut plaintext_buffer = vec![0u8; 4096];
         let mut decryption_buffer = vec![0u8; 4096];
@@ -222,7 +223,7 @@ mod aead_key_tests {
     fn two_identical_plaintexts_result_into_different_ciphertext() {
         let mut rng = OsRng;
 
-        let (mut ek, _dk) = generate_keys::<EncryptionScheme, _>(&mut rng);
+        let (mut ek, _dk) = generate_keys::<DefaultEncryptionScheme, _>(&mut rng);
 
         let mut msg1 = [0u8; 100];
         let mut msg2 = [0u8; 100];
@@ -239,7 +240,7 @@ mod aead_key_tests {
     fn doesnt_decrypt_message_with_mismatching_tag() {
         let mut rng = OsRng;
 
-        let (mut ek, mut dk) = generate_keys::<EncryptionScheme, _>(&mut rng);
+        let (mut ek, mut dk) = generate_keys::<DefaultEncryptionScheme, _>(&mut rng);
 
         let mut msg1 = [0u8; 100];
         let mut msg2 = [0u8; 100];
@@ -257,7 +258,7 @@ mod aead_key_tests {
     fn doesnt_decrypt_message_with_mismatching_ad() {
         let mut rng = OsRng;
 
-        let (mut ek, mut dk) = generate_keys::<EncryptionScheme, _>(&mut rng);
+        let (mut ek, mut dk) = generate_keys::<DefaultEncryptionScheme, _>(&mut rng);
 
         let mut msg = [0u8; 100];
         rng.fill_bytes(&mut msg);
@@ -272,7 +273,7 @@ mod aead_key_tests {
     fn doesnt_decrypt_out_of_order_ciphertext() {
         let mut rng = OsRng;
 
-        let (mut ek, mut dk) = generate_keys::<EncryptionScheme, _>(&mut rng);
+        let (mut ek, mut dk) = generate_keys::<DefaultEncryptionScheme, _>(&mut rng);
 
         let mut msg1 = [0u8; 100];
         let mut msg2 = [0u8; 100];
