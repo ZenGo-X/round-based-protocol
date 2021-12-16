@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::delivery::trusted_delivery::client::identity_resolver::IdentityResolver;
 use crate::delivery::trusted_delivery::client::insecure::crypto::{
-    CryptoSuite, EncryptionScheme, Kdf, KeyExchangeScheme, Serde, Serializable,
+    CryptoSuite, EncryptionScheme, Kdf, KdfError, KeyExchangeScheme, Serde, Serializable,
 };
 use crate::delivery::trusted_delivery::generic_array_ext::Sum;
 use crate::delivery::OutgoingChannel;
@@ -268,11 +268,9 @@ impl<C: CryptoSuite> DerivedKeys<C> {
             let mut encryption_key = <C::EncryptionScheme as EncryptionScheme>::Key::default();
             let mut decryption_key = <C::EncryptionScheme as EncryptionScheme>::Key::default();
 
-            let kdf = C::KeyExchangeScheme::kdf::<C::Kdf>(ephemeral_key, party_ephemeral);
-            kdf.expand(encryption_key_label.as_bytes(), encryption_key.as_mut())
-                .or(Err(KdfError))?;
-            kdf.expand(decryption_key_label.as_bytes(), decryption_key.as_mut())
-                .or(Err(KdfError))?;
+            let kdf = C::KeyExchangeScheme::kdf::<C::Kdf>(ephemeral_key, party_ephemeral)?;
+            kdf.expand(encryption_key_label.as_bytes(), encryption_key.as_mut())?;
+            kdf.expand(decryption_key_label.as_bytes(), decryption_key.as_mut())?;
 
             encryption_keys.insert(
                 remote_party_identity.clone(),
@@ -381,10 +379,6 @@ impl<IErr, OErr> From<OccurredBug> for HandshakeError<IErr, OErr> {
     }
 }
 
-#[derive(Debug, Error)]
-#[error("couldn't derive encryption/decryption key")]
-pub struct KdfError;
-
 #[cfg(test)]
 mod tests {
     use std::iter;
@@ -392,7 +386,7 @@ mod tests {
     use rand::rngs::OsRng;
     use rand::RngCore;
 
-    use crate::delivery::trusted_delivery::client::insecure::crypto::aead::AeadEncryptionScheme;
+    use crate::delivery::trusted_delivery::client::insecure::crypto::default_suite::aead::AeadEncryptionScheme;
     use crate::delivery::trusted_delivery::client::insecure::p2p_handshake::ephemeral::EphemeralPublicKey;
     use crate::delivery::trusted_delivery::client::insecure::test_utils::generate_parties_sk;
     use crate::simulation::Simulation;

@@ -3,19 +3,16 @@ use std::convert::Infallible;
 use std::fmt;
 use std::hash::Hash;
 
-use never::Never;
-use thiserror::Error;
-
+use aes_gcm::{AeadInPlace, Aes256Gcm};
 use generic_array::typenum::{U0, U12, U16};
 use generic_array::{ArrayLength, GenericArray};
-
+use never::Never;
 use phantom_type::PhantomType;
 use serde::{Deserialize, Serialize};
-
-use aes_gcm::{AeadInPlace, Aes256Gcm};
 use sha2::Digest;
+use thiserror::Error;
 
-pub mod aead;
+pub mod default_suite;
 
 pub trait CryptoSuite {
     type Digest: Digest<OutputSize = Self::DigestOutputSize>;
@@ -72,7 +69,7 @@ pub trait KeyExchangeScheme {
     type SecretKey;
 
     fn generate() -> (Self::PublicKey, Self::SecretKey);
-    fn kdf<K: Kdf>(local: &Self::SecretKey, remote: &Self::PublicKey) -> K;
+    fn kdf<K: Kdf>(local: &Self::SecretKey, remote: &Self::PublicKey) -> Result<K, KdfError>;
 }
 
 #[derive(Debug, Error)]

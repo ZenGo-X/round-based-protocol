@@ -3,7 +3,9 @@ use generic_array::{ArrayLength, GenericArray};
 use never::Never;
 use phantom_type::PhantomType;
 
-use super::{DecryptionKey, EncryptionKey, EncryptionScheme};
+use crate::delivery::trusted_delivery::client::insecure::crypto::{
+    DecryptionKey, EncryptionKey, EncryptionScheme,
+};
 
 pub struct AeadEncryptionScheme<K> {
     cannot_be_constructed: Never,
@@ -176,12 +178,12 @@ mod aead_key_tests {
     use rand::{Rng, RngCore};
 
     use crate::delivery::trusted_delivery::client::insecure::crypto::{
-        DecryptionKey, EncryptionKey,
+        DecryptionKey, EncryptionKey, EncryptionScheme,
     };
 
     type EncryptionScheme = super::AeadEncryptionScheme<aes_gcm::Aes256Gcm>;
 
-    fn generate_keys<S: super::EncryptionScheme, R: RngCore>(
+    fn generate_keys<S: EncryptionScheme, R: RngCore>(
         rng: &mut R,
     ) -> (S::EncryptionKey, S::DecryptionKey) {
         let mut key = S::Key::default();
