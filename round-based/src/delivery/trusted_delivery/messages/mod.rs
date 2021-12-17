@@ -7,10 +7,10 @@ mod receive_data;
 mod receive_fixed;
 mod send_fixed;
 
-// pub use self::{forward_msg::*, hello_msg::*, publish_msg::*};
-// pub use self::{receive_data::*, receive_fixed::*, send_fixed::*};
+pub use self::{forward_msg::*, hello_msg::*, publish_msg::*};
+pub use self::{receive_data::*, receive_fixed::*, send_fixed::*};
 
-pub trait FixedSizeMsg
+pub trait FixedSizeMessage
 where
     Self: Sized + Unpin,
 {
@@ -26,7 +26,7 @@ pub trait DataMsg
 where
     Self: Unpin,
 {
-    type Header: FixedSizeMsg;
+    type Header: FixedSizeMessage;
     type ValidateError;
 
     fn data_size(&self, header: &Self::Header) -> usize;

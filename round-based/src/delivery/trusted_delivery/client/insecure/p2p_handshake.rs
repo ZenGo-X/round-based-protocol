@@ -20,8 +20,6 @@ use crate::rounds::store::{RoundInput, RoundInputError};
 use crate::rounds::MessagesStore;
 use crate::{Incoming, Outgoing, OutgoingDelivery};
 
-mod ephemeral;
-
 pub struct Handshake<C: CryptoSuite, P, I, O: OutgoingChannel> {
     i: u16,
     n: u16,

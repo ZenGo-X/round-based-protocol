@@ -297,7 +297,8 @@ pub struct DecryptionError;
 
 pub trait EncryptionKeys {
     type Identity;
-    type Key: EncryptionKey;
+    type Key: EncryptionKey<TagSize = Self::TagSize>;
+    type TagSize: ArrayLength<u8>;
 
     fn has_encryption_key(&self, recipient_identity: &Self::Identity) -> bool;
     fn get_encryption_key(&mut self, recipient_identity: &Self::Identity)
@@ -306,7 +307,8 @@ pub trait EncryptionKeys {
 
 pub trait DecryptionKeys {
     type Identity;
-    type Key: DecryptionKey;
+    type Key: DecryptionKey<TagSize = Self::TagSize>;
+    type TagSize: ArrayLength<u8>;
 
     fn has_decryption_key(&self, recipient_identity: &Self::Identity) -> bool;
     fn get_decryption_key(&mut self, sender_identity: &Self::Identity) -> Option<&mut Self::Key>;
@@ -315,6 +317,7 @@ pub trait DecryptionKeys {
 impl<I: Eq + Hash, K: EncryptionKey> EncryptionKeys for HashMap<I, K> {
     type Identity = I;
     type Key = K;
+    type TagSize = K::TagSize;
 
     fn has_encryption_key(&self, recipient_identity: &Self::Identity) -> bool {
         self.contains_key(recipient_identity)
@@ -327,6 +330,7 @@ impl<I: Eq + Hash, K: EncryptionKey> EncryptionKeys for HashMap<I, K> {
 impl<I: Eq + Hash, K: DecryptionKey> DecryptionKeys for HashMap<I, K> {
     type Identity = I;
     type Key = K;
+    type TagSize = K::TagSize;
 
     fn has_decryption_key(&self, recipient_identity: &Self::Identity) -> bool {
         self.contains_key(recipient_identity)
@@ -352,6 +356,7 @@ impl<I> NoEncryption<I> {
 impl<I> EncryptionKeys for NoEncryption<I> {
     type Identity = I;
     type Key = Never;
+    type TagSize = U0;
 
     fn has_encryption_key(&self, _recipient_identity: &Self::Identity) -> bool {
         false
@@ -380,6 +385,7 @@ impl<I> NoDecryption<I> {
 impl<I> DecryptionKeys for NoDecryption<I> {
     type Identity = I;
     type Key = Never;
+    type TagSize = U0;
 
     fn has_decryption_key(&self, _recipient_identity: &Self::Identity) -> bool {
         false

@@ -11,7 +11,7 @@ use crate::delivery::trusted_delivery::client::insecure::crypto::{
 };
 use crate::delivery::trusted_delivery::generic_array_ext::Sum;
 
-use super::{DataMsg, FixedSizeMsg};
+use super::{DataMsg, FixedSizeMessage};
 
 pub struct ForwardMsgHeader<C: CryptoSuite> {
     pub sender: C::VerificationKey,
@@ -56,7 +56,7 @@ impl<C: CryptoSuite> ForwardMsgHeader<C> {
     }
 }
 
-impl<C: CryptoSuite> FixedSizeMsg for ForwardMsgHeader<C> {
+impl<C: CryptoSuite> FixedSizeMessage for ForwardMsgHeader<C> {
     type Size = Sum![
         <C::VerificationKey as Serializable>::Size, // Sender identity
         U1,                                         // is_broadcast flag

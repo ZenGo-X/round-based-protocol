@@ -8,7 +8,7 @@ use crate::delivery::trusted_delivery::client::insecure::crypto::{
     CryptoSuite, DigestExt, Serializable, SigningKey,
 };
 
-use super::FixedSizeMsg;
+use super::FixedSizeMessage;
 use crate::delivery::trusted_delivery::generic_array_ext::Sum;
 
 pub type RoomId = [u8; 32];
@@ -31,7 +31,7 @@ impl<C: CryptoSuite> HelloMsg<C> {
     }
 }
 
-impl<C: CryptoSuite> FixedSizeMsg for HelloMsg<C> {
+impl<C: CryptoSuite> FixedSizeMessage for HelloMsg<C> {
     type Size = Sum![
         C::VerificationKeySize, // identity
         U32,                    // room_id

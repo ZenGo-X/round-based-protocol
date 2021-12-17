@@ -7,11 +7,11 @@ use tokio::io::{self, AsyncRead, ReadBuf};
 
 use thiserror::Error;
 
-use super::{DataMsg, FixedSizeMsg};
+use super::{DataMsg, FixedSizeMessage};
 
 pub struct ReceiveData<M: DataMsg, IO> {
     header: Option<M::Header>,
-    header_buffer: GenericArray<u8, <M::Header as FixedSizeMsg>::Size>,
+    header_buffer: GenericArray<u8, <M::Header as FixedSizeMessage>::Size>,
     header_received: usize,
     data: Vec<u8>,
     data_received: usize,
@@ -73,10 +73,10 @@ impl<M, IO> Stream for ReceiveData<M, IO>
 where
     M: DataMsg,
     IO: AsyncRead + Unpin,
-    GenericArray<u8, <M::Header as FixedSizeMsg>::Size>: Unpin,
+    GenericArray<u8, <M::Header as FixedSizeMessage>::Size>: Unpin,
 {
     type Item =
-        Result<(), ReceiveDataError<<M::Header as FixedSizeMsg>::ParseError, M::ValidateError>>;
+        Result<(), ReceiveDataError<<M::Header as FixedSizeMessage>::ParseError, M::ValidateError>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.data_valid {
@@ -277,7 +277,7 @@ mod test {
 
     use self::{Capacity::*, ModifyMsg::*, TerminationError::*};
     use super::{ReceiveData, ReceiveDataError};
-    use crate::delivery::trusted_delivery::messages::{DataMsg, FixedSizeMsg};
+    use crate::delivery::trusted_delivery::messages::{DataMsg, FixedSizeMessage};
     use generic_array::GenericArray;
 
     #[derive(Debug, Clone, PartialEq)]
@@ -304,7 +304,7 @@ mod test {
         data_len: u16,
     }
 
-    impl FixedSizeMsg for Header {
+    impl FixedSizeMessage for Header {
         type Size = U20;
         type ParseError = ();
 

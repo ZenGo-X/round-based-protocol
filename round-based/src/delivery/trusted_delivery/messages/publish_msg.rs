@@ -11,15 +11,15 @@ use crate::delivery::trusted_delivery::client::insecure::crypto::{
 };
 use crate::delivery::trusted_delivery::generic_array_ext::Sum;
 
-use super::{DataMsg, FixedSizeMsg};
+use super::{DataMsg, FixedSizeMessage};
 
-pub struct PublishMsgHeader<C: CryptoSuite> {
+pub struct PublishMessageHeader<C: CryptoSuite> {
     pub recipient: Option<C::VerificationKey>,
     pub signature: C::Signature,
     pub message_body_len: u16,
 }
 
-impl<C: CryptoSuite> PublishMsgHeader<C> {
+impl<C: CryptoSuite> PublishMessageHeader<C> {
     pub fn new(
         identity_key: &C::SigningKey,
         recipient: Option<C::VerificationKey>,
@@ -64,7 +64,7 @@ impl<C: CryptoSuite> PublishMsgHeader<C> {
     }
 }
 
-impl<C: CryptoSuite> FixedSizeMsg for PublishMsgHeader<C> {
+impl<C: CryptoSuite> FixedSizeMessage for PublishMessageHeader<C> {
     type Size = Sum![
         U1,                     // is_broadcast flag
         C::VerificationKeySize, // recipient identity (zeroes if it's broadcast msg)
@@ -141,7 +141,7 @@ impl<C: CryptoSuite> PublishMsg<C> {
 }
 
 impl<C: CryptoSuite> DataMsg for PublishMsg<C> {
-    type Header = PublishMsgHeader<C>;
+    type Header = PublishMessageHeader<C>;
     type ValidateError = InvalidPublishMsg;
 
     fn data_size(&self, header: &Self::Header) -> usize {

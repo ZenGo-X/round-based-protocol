@@ -8,9 +8,9 @@ use tokio::io::{self, AsyncRead, ReadBuf};
 
 use thiserror::Error;
 
-use super::FixedSizeMsg;
+use super::FixedSizeMessage;
 
-pub struct ReceiveFixed<M: FixedSizeMsg, IO> {
+pub struct ReceiveFixed<M: FixedSizeMessage, IO> {
     channel: IO,
     buffer: GenericArray<u8, M::Size>,
     buffer_written: usize,
@@ -18,7 +18,7 @@ pub struct ReceiveFixed<M: FixedSizeMsg, IO> {
 
 impl<M, IO> ReceiveFixed<M, IO>
 where
-    M: FixedSizeMsg,
+    M: FixedSizeMessage,
     IO: AsyncRead + Unpin,
 {
     pub fn new(channel: IO) -> Self {
@@ -36,7 +36,7 @@ where
 
 impl<M, IO> Stream for ReceiveFixed<M, IO>
 where
-    M: FixedSizeMsg,
+    M: FixedSizeMessage,
     IO: AsyncRead + Unpin,
     GenericArray<u8, M::Size>: Unpin,
 {
@@ -101,7 +101,7 @@ mod test {
     use hamcrest2::{all, HamcrestMatcher};
     use test_case::test_case;
 
-    use crate::delivery::trusted_delivery::messages::FixedSizeMsg;
+    use crate::delivery::trusted_delivery::messages::FixedSizeMessage;
 
     use super::{ReceiveFixed, ReceiveFixedError};
 
@@ -179,7 +179,7 @@ mod test {
 
     #[derive(Clone, Debug, PartialEq)]
     struct TestMsg(GenericArray<u8, U256>);
-    impl FixedSizeMsg for TestMsg {
+    impl FixedSizeMessage for TestMsg {
         type Size = U256;
         type ParseError = ();
         fn parse(raw: &GenericArray<u8, Self::Size>) -> Result<Self, Self::ParseError> {

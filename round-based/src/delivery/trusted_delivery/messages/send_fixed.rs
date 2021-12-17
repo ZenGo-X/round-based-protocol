@@ -5,10 +5,10 @@ use std::task::{Context, Poll};
 use futures::ready;
 use tokio::io::{self, AsyncWrite};
 
-use crate::delivery::trusted_delivery::messages::FixedSizeMsg;
+use crate::delivery::trusted_delivery::messages::FixedSizeMessage;
 use generic_array::GenericArray;
 
-pub struct SendFixed<M: FixedSizeMsg, IO> {
+pub struct SendFixed<M: FixedSizeMessage, IO> {
     channel: IO,
     serialized_msg: GenericArray<u8, M::Size>,
     bytes_sent: usize,
@@ -16,7 +16,7 @@ pub struct SendFixed<M: FixedSizeMsg, IO> {
 
 impl<M, IO> SendFixed<M, IO>
 where
-    M: FixedSizeMsg,
+    M: FixedSizeMessage,
     IO: AsyncWrite + Unpin,
     GenericArray<u8, M::Size>: Unpin,
 {
@@ -35,7 +35,7 @@ where
 
 impl<M, IO> Future for SendFixed<M, IO>
 where
-    M: FixedSizeMsg,
+    M: FixedSizeMessage,
     IO: AsyncWrite + Unpin,
     GenericArray<u8, M::Size>: Unpin,
 {
