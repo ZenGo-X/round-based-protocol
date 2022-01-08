@@ -1,18 +1,20 @@
 use phantom_type::PhantomType;
 
 use crate::blocking::{Blocking, SpawnBlocking, TokioSpawnBlocking};
-use crate::delivery::{Delivery, OutgoingChannel};
+use crate::delivery::Delivery;
 use crate::rounds::ProtocolMessage;
-
-pub type ReceiveError<M> =
-    <<M as Mpc>::Delivery as Delivery<<M as Mpc>::ProtocolMessage>>::ReceiveError;
-pub type SendError<M> =
-    <<<M as Mpc>::Delivery as Delivery<<M as Mpc>::ProtocolMessage>>::Send as OutgoingChannel>::Error;
 
 pub trait Mpc: internal::Sealed {
     type ProtocolMessage: ProtocolMessage + Send + 'static;
-    type Delivery: Delivery<Self::ProtocolMessage>;
+    type Delivery: Delivery<
+        Self::ProtocolMessage,
+        SendError = Self::SendError,
+        ReceiveError = Self::ReceiveError,
+    >;
     type SpawnBlocking: SpawnBlocking;
+
+    type SendError;
+    type ReceiveError: Send + Unpin + 'static;
 
     fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::SpawnBlocking>;
 }
@@ -72,11 +74,15 @@ impl<M, D, B> Mpc for MpcParty<M, D, B>
 where
     M: ProtocolMessage + Send + 'static,
     D: Delivery<M>,
+    D::ReceiveError: Send + Unpin + 'static,
     B: SpawnBlocking,
 {
     type ProtocolMessage = M;
     type Delivery = D;
     type SpawnBlocking = B;
+
+    type SendError = D::SendError;
+    type ReceiveError = D::ReceiveError;
 
     fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::SpawnBlocking> {
         self

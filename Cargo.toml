@@ -2,5 +2,9 @@
 members = [
     "round-based",
     "round-based-derive",
+    "delivery/core",
+    "delivery/trusted-delivery",
+    "delivery/two-party",
+    "delivery/utils",
 ]
 

@@ -1,14 +1,14 @@
+use futures::SinkExt;
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use sha2::{digest::Output, Digest, Sha256};
 
-use round_based::party;
 use round_based::rounds::{
     store::{RoundInput, RoundInputError},
     ReceiveError, Rounds,
 };
 use round_based::simulation::Simulation;
-use round_based::{Delivery, Mpc, MpcParty, Outgoing, OutgoingDeliveryExt, ProtocolMessage};
+use round_based::{Delivery, Mpc, MpcParty, Outgoing, ProtocolMessage};
 
 #[derive(Clone, Debug, PartialEq, ProtocolMessage)]
 pub enum Msg {
@@ -31,7 +31,7 @@ async fn protocol_of_random_generation<R, M>(
     i: u16,
     n: u16,
     mut rng: R,
-) -> Result<[u8; 32], Error<party::ReceiveError<M>, party::SendError<M>>>
+) -> Result<[u8; 32], Error<M::ReceiveError, M::SendError>>
 where
     M: Mpc<ProtocolMessage = Msg>,
     R: RngCore,
@@ -56,7 +56,7 @@ where
     outgoing
         .send(Outgoing {
             recipient: None,
-            msg: &Msg::CommitMsg(CommitMsg { commitment }),
+            msg: Msg::CommitMsg(CommitMsg { commitment }),
         })
         .await
         .map_err(Error::Round1Send)?;
@@ -73,7 +73,7 @@ where
     outgoing
         .send(Outgoing {
             recipient: None,
-            msg: &Msg::DecommitMsg(DecommitMsg {
+            msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: local_randomness,
             }),
         })

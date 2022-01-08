@@ -1,11 +1,11 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use futures::{ready, Stream};
+use futures::{ready, Sink, Stream};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
-use crate::delivery::{Delivery, Incoming, Outgoing, OutgoingChannel, OutgoingDelivery};
+use crate::delivery::{Delivery, Incoming, Outgoing};
 use crate::rounds::ProtocolMessage;
 use crate::MpcParty;
 
@@ -90,6 +90,7 @@ where
 {
     type Send = SimulationOutgoing<M>;
     type Receive = SimulationIncoming<M>;
+    type SendError = broadcast::error::SendError<()>;
     type ReceiveError = BroadcastStreamRecvError;
 
     fn split(self) -> (Self::Receive, Self::Send) {
@@ -128,16 +129,21 @@ pub struct SimulationOutgoing<M> {
     sender: broadcast::Sender<Outgoing<Incoming<M>>>,
 }
 
-impl<M> OutgoingChannel for SimulationOutgoing<M> {
-    type MessageSize = OneMessage;
+impl<M> Sink<Outgoing<M>> for SimulationOutgoing<M> {
     type Error = broadcast::error::SendError<()>;
 
-    fn poll_ready(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        _msg_size: &Self::MessageSize,
-    ) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
+    }
+
+    fn start_send(self: Pin<&mut Self>, msg: Outgoing<M>) -> Result<(), Self::Error> {
+        self.sender
+            .send(msg.map(|m| Incoming {
+                sender: self.local_party_idx,
+                msg: m,
+            }))
+            .map_err(|_| broadcast::error::SendError(()))?;
+        Ok(())
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), Self::Error>> {
@@ -148,29 +154,3 @@ impl<M> OutgoingChannel for SimulationOutgoing<M> {
         Poll::Ready(Ok(()))
     }
 }
-
-impl<M> OutgoingDelivery<M> for SimulationOutgoing<M>
-where
-    M: Clone,
-{
-    fn message_size(
-        self: Pin<&Self>,
-        _msg: Outgoing<&M>,
-    ) -> Result<Self::MessageSize, Self::Error> {
-        Ok(OneMessage(()))
-    }
-
-    fn start_send(self: Pin<&mut Self>, msg: Outgoing<&M>) -> Result<(), Self::Error> {
-        self.sender
-            .send(msg.map(|m| Incoming {
-                sender: self.local_party_idx,
-                msg: m.clone(),
-            }))
-            .map_err(|_| broadcast::error::SendError(()))?;
-        Ok(())
-    }
-}
-
-/// Size of single message being transferred over simulated channel
-#[derive(Copy, Clone, Debug)]
-pub struct OneMessage(());
