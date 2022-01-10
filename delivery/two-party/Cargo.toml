@@ -16,4 +16,4 @@ delivery-utils = { path = "../utils" }
 [dev-dependencies]
 rand = "0.8"
 rand_chacha = "0.3"
-tokio = { version = "1", features = ["macros", "rt"] }
+futures-test = "0.3"

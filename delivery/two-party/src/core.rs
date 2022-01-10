@@ -16,10 +16,8 @@ use futures::{ready, Sink, Stream};
 use phantom_type::PhantomType;
 use thiserror::Error;
 
+use delivery_core::serialization_backend::{Bincode, DeserializationBackend, SerializationBackend};
 use delivery_core::{Delivery, Incoming, Outgoing};
-use delivery_core::serialization_backend::{
-    Bincode, DeserializationBackend, SerializationBackend,
-};
 
 /// A connection established between two parties that can be used to exchange messages `M`
 ///
@@ -105,8 +103,8 @@ where
 {
     type Send = SendLink<W, S>;
     type Receive = RecvLink<M, R, D>;
-    type SendError = io::Error;
-    type ReceiveError = io::Error;
+    type SendError = SendError<S::Error>;
+    type ReceiveError = RecvError<D::Error>;
 
     fn split(self) -> (Self::Receive, Self::Send) {
         (self.recv, self.send)
@@ -142,7 +140,7 @@ pub struct SendLink<L, S = Bincode> {
 
     message_is_being_written: bool,
     bytes_written: usize,
-    message_size: usize,
+    message_size: u16,
     buffer: Box<[u8]>,
 
     side: Side,
@@ -186,7 +184,7 @@ where
     L: AsyncWrite + Unpin,
     S: SerializationBackend<M> + Unpin,
 {
-    type Error = io::Error;
+    type Error = SendError<S::Error>;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = &mut *self;
@@ -196,20 +194,35 @@ where
         }
 
         while this.bytes_written < 2 {
-            this.bytes_written += ready!(Pin::new(&mut this.link).poll_write_vectored(
+            let bytes_written = ready!(Pin::new(&mut this.link).poll_write_vectored(
                 cx,
                 &[
-                    io::IoSlice::new(&this.message_size.to_be_bytes()),
-                    io::IoSlice::new(&this.buffer[..this.message_size])
+                    io::IoSlice::new(&this.message_size.to_be_bytes()[this.bytes_written..]),
+                    io::IoSlice::new(&this.buffer[..usize::from(this.message_size)])
                 ]
             ))?;
+
+            if bytes_written == 0 {
+                return Poll::Ready(Err(io::Error::from(io::ErrorKind::WriteZero).into()));
+            }
+
+            this.bytes_written += bytes_written;
         }
 
-        while this.bytes_written < 2 + this.message_size {
-            this.bytes_written += ready!(Pin::new(&mut this.link)
-                .poll_write(cx, &this.buffer[this.bytes_written - 2..this.message_size]))?;
+        while this.bytes_written < 2 + usize::from(this.message_size) {
+            let bytes_written = ready!(Pin::new(&mut this.link).poll_write(
+                cx,
+                &this.buffer[this.bytes_written - 2..usize::from(this.message_size)]
+            ))?;
+
+            if bytes_written == 0 {
+                return Poll::Ready(Err(io::Error::from(io::ErrorKind::WriteZero).into()));
+            }
+
+            this.bytes_written += bytes_written;
         }
 
+        this.bytes_written = 0;
         this.message_is_being_written = false;
 
         Poll::Ready(Ok(()))
@@ -219,41 +232,41 @@ where
         let this = &mut *self;
 
         if this.message_is_being_written {
-            return Err(io::Error::new(io::ErrorKind::Other, MissingPollReady));
+            return Err(SendErrorReason::MissingPollReady.into());
         }
 
         if let Some(recipient) = msg.recipient {
             if recipient != this.side.counterparty_index() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    InvalidReceiverIndex {
-                        expected: this.side.counterparty_index(),
-                        actual: recipient,
-                    },
-                ));
+                return Err(SendErrorReason::InvalidReceiverIndex {
+                    expected: this.side.counterparty_index(),
+                    actual: recipient,
+                }
+                .into());
             }
         }
 
         let mut buffer = std::io::Cursor::new(&mut this.buffer[..]);
         this.serializer
             .serialize_into(&msg.msg, &mut buffer)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, SerializeMessageError(e)))?;
+            .map_err(SendErrorReason::SerializeMessage)?;
 
         this.message_size = buffer
             .position()
             .try_into()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, MessageSizeOverflowsUsize))?;
+            .or(Err(SendErrorReason::MessageSizeOverflowsUsize))?;
+
+        this.message_is_being_written = true;
 
         Ok(())
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         ready!(<Self as Sink<Outgoing<M>>>::poll_ready(self.as_mut(), cx))?;
         ready!(Pin::new(&mut self.link).poll_flush(cx))?;
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         ready!(<Self as Sink<Outgoing<M>>>::poll_ready(self.as_mut(), cx))?;
         ready!(Pin::new(&mut self.link).poll_close(cx))?;
         Poll::Ready(Ok(()))
@@ -327,7 +340,7 @@ where
     R: AsyncRead + Unpin,
     D: DeserializationBackend<M> + Unpin,
 {
-    type Item = io::Result<Incoming<M>>;
+    type Item = Result<Incoming<M>, RecvError<D::Error>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         let this = &mut *self;
@@ -346,16 +359,18 @@ where
             if received_bytes == 0 && this.buffer_filled == 0 {
                 return Poll::Ready(None);
             } else if received_bytes == 0 {
-                return Poll::Ready(Some(Err(io::ErrorKind::UnexpectedEof.into())));
+                return Poll::Ready(Some(Err(
+                    io::Error::from(io::ErrorKind::UnexpectedEof).into()
+                )));
             } else {
                 this.buffer_filled += received_bytes;
             }
         };
 
-        let parsed_message: io::Result<M> = this
+        let parsed_message: Result<M, _> = this
             .deserializer
             .deserialize(&this.buffer[2..2 + message_size])
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, DeserializeMessageError(e)));
+            .map_err(RecvErrorReason::DeserializeMessage);
 
         this.buffer.copy_within(2 + message_size.., 0);
         this.buffer_filled -= 2 + message_size;
@@ -368,45 +383,65 @@ where
 }
 
 #[derive(Debug, Error)]
-#[error("invalid recipient index: expected={expected} got={actual}")]
-struct InvalidReceiverIndex {
-    expected: u16,
-    actual: u16,
+#[error(transparent)]
+pub struct SendError<S>(#[from] SendErrorReason<S>);
+
+#[derive(Debug, Error)]
+pub enum SendErrorReason<S> {
+    #[error("invalid recipient index: expected={expected} got={actual}")]
+    InvalidReceiverIndex { expected: u16, actual: u16 },
+    #[error("could not serialize message")]
+    SerializeMessage(#[source] S),
+    #[error("message is too large (overflows usize)")]
+    MessageSizeOverflowsUsize,
+    #[error("missing prior `poll_ready` call")]
+    MissingPollReady,
+    #[error(transparent)]
+    Io(io::Error),
+}
+
+impl<S> From<io::Error> for SendError<S> {
+    fn from(err: io::Error) -> Self {
+        SendError(SendErrorReason::Io(err))
+    }
 }
 
 #[derive(Debug, Error)]
-#[error("could not serialize message")]
-struct SerializeMessageError<E>(#[source] E);
+#[error(transparent)]
+pub struct RecvError<S>(#[from] RecvErrorReason<S>);
+
+#[derive(Debug, Error)]
+pub enum RecvErrorReason<S> {
+    #[error("could not deserialize message")]
+    DeserializeMessage(#[source] S),
+    #[error(transparent)]
+    Io(io::Error),
+}
+
+impl<S> From<io::Error> for RecvError<S> {
+    fn from(err: io::Error) -> Self {
+        RecvError(RecvErrorReason::Io(err))
+    }
+}
 
 #[derive(Debug, Error)]
 #[error("could not deserialize message")]
 struct DeserializeMessageError<E>(#[source] E);
 
-#[derive(Debug, Error)]
-#[error("message is too large (overflows usize)")]
-struct MessageSizeOverflowsUsize;
-
-#[derive(Debug, Error)]
-#[error("missing prior `poll_ready` call")]
-struct MissingPollReady;
-
 #[cfg(test)]
 mod tests {
-    use std::cmp::min;
-    use std::io::Write;
+    use std::io::{self, Write};
     use std::num::NonZeroU32;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
 
-    use futures::{AsyncRead, TryStreamExt};
-    use tokio::io;
+    use futures::{SinkExt, StreamExt, TryStreamExt};
+    use futures_test::{io::*, test};
 
-    use delivery_core::Incoming;
     use delivery_core::serialization_backend::{DeserializationBackend, SerializationBackend};
+    use delivery_core::{Incoming, Outgoing};
 
-    use super::{RecvLink, Side};
+    use super::{RecvError, RecvErrorReason, RecvLink, SendLink, Side};
 
-    #[tokio::test]
+    #[test]
     async fn receives_two_messages() {
         let raw = &[
             0x00, 0x04, 0xfa, 0xbe, 0x82, 0x6c, // 1st message
@@ -426,9 +461,9 @@ mod tests {
 
         let chunk_sizes = [1, 3, 6, 9, 12];
         for chunk_size in chunk_sizes {
-            let stream =
-                RecvLink::with_limit(ReadChunkByChunk::new(chunk_size, raw), Side::Server, 8)
-                    .set_deserialization_backend(NonZeroU32Encoding);
+            let channel = raw.as_ref().interleave_pending().limited(chunk_size);
+            let stream = RecvLink::with_limit(channel, Side::Server, 6)
+                .set_deserialization_backend(NonZeroU32Encoding);
             assert_eq!(
                 stream.try_collect::<Vec<_>>().await.unwrap(),
                 should_receive
@@ -436,44 +471,95 @@ mod tests {
         }
     }
 
-    struct ReadChunkByChunk<'b> {
-        bytes: &'b [u8],
-        chunk_size: usize,
-        is_ready: bool,
+    #[test]
+    async fn deserialization_error_doesnt_prevent_from_receiving_next_message() {
+        let raw = &[
+            0x00, 0x04, 0x00, 0x00, 0x00, 0x00, // invalid message: integer = 0
+            0x00, 0x03, 0x7f, 0x58, 0x12, // invalid message: mismatched size
+            0x00, 0x04, 0x7f, 0x58, 0x12, 0x1d, // 2nd message
+        ];
+
+        let mut stream = RecvLink::with_limit(raw.as_ref(), Side::Server, 4)
+            .set_deserialization_backend(NonZeroU32Encoding);
+
+        assert!(matches!(
+            stream.next().await,
+            Some(Err(RecvError(RecvErrorReason::DeserializeMessage(
+                InvalidInteger::Zero
+            ))))
+        ));
+        assert!(matches!(
+            stream.next().await,
+            Some(Err(RecvError(RecvErrorReason::DeserializeMessage(
+                InvalidInteger::MismatchedSize { length: 3 }
+            ))))
+        ));
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            Incoming {
+                sender: 1,
+                msg: NonZeroU32::try_from(0x7f58121d).unwrap(),
+            }
+        );
+        assert!(stream.next().await.is_none());
     }
 
-    impl<'b> ReadChunkByChunk<'b> {
-        pub fn new(chunk_size: usize, bytes: &'b [u8]) -> Self {
-            Self {
-                bytes,
-                chunk_size,
-                is_ready: true,
+    #[test]
+    async fn propagates_unexpected_eof_error() {
+        let raw = &[
+            0x00, 0x04, 0xfa, 0xbe, 0x82, 0x6c, // 1st message
+            0x00, 0x04, 0x7f, 0x58, 0x12, // incomplete 2nd message
+        ];
+
+        let mut stream = RecvLink::with_limit(raw.as_ref(), Side::Server, 4)
+            .set_deserialization_backend(NonZeroU32Encoding);
+
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            Incoming {
+                sender: 1,
+                msg: NonZeroU32::try_from(0xfabe826c).unwrap(),
             }
-        }
+        );
+        assert!(matches!(
+            stream.next().await, Some(Err(RecvError(RecvErrorReason::Io(err)))) if err.kind() == io::ErrorKind::UnexpectedEof
+        ));
     }
 
-    impl<'b> AsyncRead for ReadChunkByChunk<'b> {
-        fn poll_read(
-            mut self: Pin<&mut Self>,
-            cx: &mut Context<'_>,
-            buf: &mut [u8],
-        ) -> Poll<std::io::Result<usize>> {
-            if !self.is_ready {
-                self.is_ready = true;
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-            if self.bytes.is_empty() {
-                return Poll::Ready(Ok(0));
-            }
+    #[test]
+    async fn sends_two_messages() {
+        let messages = &[
+            Outgoing {
+                recipient: Some(1),
+                msg: NonZeroU32::new(0xfabe826c).unwrap(),
+            },
+            Outgoing {
+                recipient: Some(1),
+                msg: NonZeroU32::new(0x7f58121d).unwrap(),
+            },
+        ];
 
-            let size = min(self.chunk_size, buf.len());
-            let size = min(size, self.bytes.len());
-            buf[..size].copy_from_slice(&self.bytes[..size]);
-            self.bytes = &self.bytes[size..];
-            self.is_ready = false;
+        let should_be_sent = &[
+            0x00, 0x04, 0xfa, 0xbe, 0x82, 0x6c, // 1st message
+            0x00, 0x04, 0x7f, 0x58, 0x12, 0x1d, // 2nd message
+        ];
 
-            Poll::Ready(Ok(size))
+        let chunk_sizes = [1, 3, 6, 9, 12];
+
+        for chunk_size in chunk_sizes {
+            let mut buffer = [0u8; 12];
+            let channel = futures::io::Cursor::new(buffer.as_mut())
+                .interleave_pending_write()
+                .limited_write(chunk_size)
+                .track_closed();
+            let mut sink = SendLink::with_limit(channel, Side::Server, 6)
+                .set_serialization_backend(NonZeroU32Encoding);
+
+            sink.feed(messages[0]).await.unwrap();
+            sink.feed(messages[1]).await.unwrap();
+            sink.close().await.unwrap();
+
+            assert_eq!(&buffer, should_be_sent);
         }
     }
 
