@@ -639,18 +639,6 @@ mod tests {
         Io(#[from] io::Error),
     }
 
-    // impl SerializationBackend<NonZeroU32> for NonZeroU32Encoding {
-    //     type Error = EncodeError;
-    //
-    //     fn serialize_into<W: Write>(
-    //         &self,
-    //         value: &NonZeroU32,
-    //         mut buffer: W,
-    //     ) -> Result<(), Self::Error> {
-    //         buffer.write_all(&value.get().to_be_bytes())?;
-    //         Ok(())
-    //     }
-    // }
     impl SerializationBackend<u32> for NonZeroU32Encoding {
         type Error = EncodeError;
 
