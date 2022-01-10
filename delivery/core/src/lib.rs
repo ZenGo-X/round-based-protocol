@@ -11,6 +11,8 @@
 //!
 //! We provide several delivery implementations for most common cases. See [two_party] module.
 
+pub mod serialization_backend;
+
 use futures::{Sink, Stream};
 
 /// A pair of incoming and outgoing delivery channels

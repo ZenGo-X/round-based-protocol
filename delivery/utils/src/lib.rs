@@ -1,5 +1,3 @@
-pub mod serialization_backend;
-
 #[cfg(test)]
 mod tests {
     #[test]

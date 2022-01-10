@@ -17,7 +17,7 @@ use phantom_type::PhantomType;
 use thiserror::Error;
 
 use delivery_core::{Delivery, Incoming, Outgoing};
-use delivery_utils::serialization_backend::{
+use delivery_core::serialization_backend::{
     Bincode, DeserializationBackend, SerializationBackend,
 };
 
@@ -402,7 +402,7 @@ mod tests {
     use tokio::io;
 
     use delivery_core::Incoming;
-    use delivery_utils::serialization_backend::{DeserializationBackend, SerializationBackend};
+    use delivery_core::serialization_backend::{DeserializationBackend, SerializationBackend};
 
     use super::{RecvLink, Side};
 
