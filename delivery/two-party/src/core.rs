@@ -48,8 +48,8 @@ use delivery_core::{Delivery, Incoming, Outgoing};
 ///
 /// _Note:_ if you indeed need to construct TwoParty over plain TCP, we've got it for you: see [insecure module](insecure)
 pub struct TwoParty<M, R, W, S = Bincode, D = Bincode> {
-    pub recv: RecvLink<M, R, D>,
-    pub send: SendLink<W, S>,
+    pub recv: Outgoings<M, R, D>,
+    pub send: Incomings<W, S>,
 }
 
 impl<M, R, W> TwoParty<M, R, W> {
@@ -64,15 +64,15 @@ impl<M, R, W> TwoParty<M, R, W> {
     /// * `side` determines whether this party is a server or a client.
     pub fn new(side: Side, read_link: R, write_link: W) -> Self {
         Self {
-            recv: RecvLink::new(read_link, side),
-            send: SendLink::new(write_link, side),
+            recv: Outgoings::new(read_link, side),
+            send: Incomings::new(write_link, side),
         }
     }
 
     pub fn with_limit(side: Side, read_link: R, write_link: W, message_size_limit: usize) -> Self {
         Self {
-            recv: RecvLink::with_limit(read_link, side, message_size_limit),
-            send: SendLink::with_limit(write_link, side, message_size_limit),
+            recv: Outgoings::with_limit(read_link, side, message_size_limit),
+            send: Incomings::with_limit(write_link, side, message_size_limit),
         }
     }
 }
@@ -101,8 +101,8 @@ where
     D: DeserializationBackend<M> + Send + Unpin + 'static,
     M: 'static,
 {
-    type Send = SendLink<W, S>;
-    type Receive = RecvLink<M, R, D>;
+    type Send = Incomings<W, S>;
+    type Receive = Outgoings<M, R, D>;
     type SendError = SendError<S::Error>;
     type ReceiveError = RecvError<D::Error>;
 
@@ -134,7 +134,7 @@ impl Side {
 /// An outgoing link to the party
 ///
 /// Wraps AsyncWrite that delivers bytes to the party, and implements [DeliverOutgoing].
-pub struct SendLink<L, S = Bincode> {
+pub struct Incomings<L, S = Bincode> {
     link: L,
     serializer: S,
 
@@ -146,7 +146,7 @@ pub struct SendLink<L, S = Bincode> {
     side: Side,
 }
 
-impl<L> SendLink<L> {
+impl<L> Incomings<L> {
     pub fn new(link: L, side: Side) -> Self {
         Self::with_limit(link, side, 10_000)
     }
@@ -164,9 +164,9 @@ impl<L> SendLink<L> {
     }
 }
 
-impl<L, S> SendLink<L, S> {
-    pub fn set_serialization_backend<B>(self, backend: B) -> SendLink<L, B> {
-        SendLink {
+impl<L, S> Incomings<L, S> {
+    pub fn set_serialization_backend<B>(self, backend: B) -> Incomings<L, B> {
+        Incomings {
             serializer: backend,
 
             link: self.link,
@@ -179,7 +179,7 @@ impl<L, S> SendLink<L, S> {
     }
 }
 
-impl<L, S, M> Sink<Outgoing<M>> for SendLink<L, S>
+impl<L, S, M> Sink<Outgoing<M>> for Incomings<L, S>
 where
     L: AsyncWrite + Unpin,
     S: SerializationBackend<M> + Unpin,
@@ -276,7 +276,7 @@ where
 /// An incoming link from the party
 ///
 /// Wraps AsyncRead that receives bytes from the party, and implements [`Stream<Item=Incoming<M>>`](Stream).
-pub struct RecvLink<M, R, D = Bincode> {
+pub struct Outgoings<M, R, D = Bincode> {
     link: R,
     deserializer: D,
     side: Side,
@@ -287,7 +287,7 @@ pub struct RecvLink<M, R, D = Bincode> {
     _ph: PhantomType<M>,
 }
 
-impl<M, L> RecvLink<M, L> {
+impl<M, L> Outgoings<M, L> {
     /// Constructs a new receive link
     ///
     /// `link` is a `AsyncRead` that receives bytes from counterparty. `capacity` is a maximum length
@@ -297,7 +297,7 @@ impl<M, L> RecvLink<M, L> {
     }
 
     pub fn with_limit(link: L, side: Side, message_size_limit: usize) -> Self {
-        RecvLink {
+        Outgoings {
             link,
             deserializer: Bincode::default(),
             side,
@@ -310,9 +310,9 @@ impl<M, L> RecvLink<M, L> {
     }
 }
 
-impl<M, L, D> RecvLink<M, L, D> {
-    pub fn set_deserialization_backend<B>(self, backend: B) -> RecvLink<M, L, B> {
-        RecvLink {
+impl<M, L, D> Outgoings<M, L, D> {
+    pub fn set_deserialization_backend<B>(self, backend: B) -> Outgoings<M, L, B> {
+        Outgoings {
             deserializer: backend,
 
             link: self.link,
@@ -335,7 +335,7 @@ impl<M, L, D> RecvLink<M, L, D> {
     }
 }
 
-impl<M, R, D> Stream for RecvLink<M, R, D>
+impl<M, R, D> Stream for Outgoings<M, R, D>
 where
     R: AsyncRead + Unpin,
     D: DeserializationBackend<M> + Unpin,
@@ -439,7 +439,7 @@ mod tests {
     use delivery_core::serialization_backend::{DeserializationBackend, SerializationBackend};
     use delivery_core::{Incoming, Outgoing};
 
-    use super::{RecvError, RecvErrorReason, RecvLink, SendLink, Side};
+    use super::{Incomings, Outgoings, RecvError, RecvErrorReason, Side};
 
     #[test]
     async fn receives_two_messages() {
@@ -462,7 +462,7 @@ mod tests {
         let chunk_sizes = [1, 3, 6, 9, 12];
         for chunk_size in chunk_sizes {
             let channel = raw.as_ref().interleave_pending().limited(chunk_size);
-            let stream = RecvLink::with_limit(channel, Side::Server, 6)
+            let stream = Outgoings::with_limit(channel, Side::Server, 6)
                 .set_deserialization_backend(NonZeroU32Encoding);
             assert_eq!(
                 stream.try_collect::<Vec<_>>().await.unwrap(),
@@ -479,7 +479,7 @@ mod tests {
             0x00, 0x04, 0x7f, 0x58, 0x12, 0x1d, // 2nd message
         ];
 
-        let mut stream = RecvLink::with_limit(raw.as_ref(), Side::Server, 4)
+        let mut stream = Outgoings::with_limit(raw.as_ref(), Side::Server, 4)
             .set_deserialization_backend(NonZeroU32Encoding);
 
         assert!(matches!(
@@ -511,7 +511,7 @@ mod tests {
             0x00, 0x04, 0x7f, 0x58, 0x12, // incomplete 2nd message
         ];
 
-        let mut stream = RecvLink::with_limit(raw.as_ref(), Side::Server, 4)
+        let mut stream = Outgoings::with_limit(raw.as_ref(), Side::Server, 4)
             .set_deserialization_backend(NonZeroU32Encoding);
 
         assert_eq!(
@@ -552,7 +552,7 @@ mod tests {
                 .interleave_pending_write()
                 .limited_write(chunk_size)
                 .track_closed();
-            let mut sink = SendLink::with_limit(channel, Side::Server, 6)
+            let mut sink = Incomings::with_limit(channel, Side::Server, 6)
                 .set_serialization_backend(NonZeroU32Encoding);
 
             sink.feed(messages[0]).await.unwrap();
