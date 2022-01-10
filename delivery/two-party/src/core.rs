@@ -432,14 +432,18 @@ struct DeserializeMessageError<E>(#[source] E);
 mod tests {
     use std::io::{self, Write};
     use std::num::NonZeroU32;
+    use std::pin::Pin;
 
-    use futures::{SinkExt, StreamExt, TryStreamExt};
+    use futures::{Sink, SinkExt, StreamExt, TryStreamExt};
     use futures_test::{io::*, test};
+    use matches::assert_matches;
 
     use delivery_core::serialization_backend::{DeserializationBackend, SerializationBackend};
     use delivery_core::{Incoming, Outgoing};
 
-    use super::{Incomings, Outgoings, RecvError, RecvErrorReason, Side};
+    use super::{
+        Incomings, Outgoings, RecvError, RecvErrorReason, SendError, SendErrorReason, Side,
+    };
 
     #[test]
     async fn receives_two_messages() {
@@ -482,18 +486,18 @@ mod tests {
         let mut stream = Outgoings::with_limit(raw.as_ref(), Side::Server, 4)
             .set_deserialization_backend(NonZeroU32Encoding);
 
-        assert!(matches!(
+        assert_matches!(
             stream.next().await,
             Some(Err(RecvError(RecvErrorReason::DeserializeMessage(
-                InvalidInteger::Zero
+                DecodeError::Zero
             ))))
-        ));
-        assert!(matches!(
+        );
+        assert_matches!(
             stream.next().await,
             Some(Err(RecvError(RecvErrorReason::DeserializeMessage(
-                InvalidInteger::MismatchedSize { length: 3 }
+                DecodeError::MismatchedSize { length: 3 }
             ))))
-        ));
+        );
         assert_eq!(
             stream.next().await.unwrap().unwrap(),
             Incoming {
@@ -521,9 +525,9 @@ mod tests {
                 msg: NonZeroU32::try_from(0xfabe826c).unwrap(),
             }
         );
-        assert!(matches!(
+        assert_matches!(
             stream.next().await, Some(Err(RecvError(RecvErrorReason::Io(err)))) if err.kind() == io::ErrorKind::UnexpectedEof
-        ));
+        );
     }
 
     #[test]
@@ -531,11 +535,11 @@ mod tests {
         let messages = &[
             Outgoing {
                 recipient: Some(1),
-                msg: NonZeroU32::new(0xfabe826c).unwrap(),
+                msg: 0xfabe826c,
             },
             Outgoing {
                 recipient: Some(1),
-                msg: NonZeroU32::new(0x7f58121d).unwrap(),
+                msg: 0x7f58121d,
             },
         ];
 
@@ -563,37 +567,110 @@ mod tests {
         }
     }
 
+    #[test]
+    async fn dont_send_malformed_message() {
+        let mut buffer = [0u8; 12];
+
+        let channel = futures::io::Cursor::new(buffer.as_mut());
+        let mut sink =
+            Incomings::new(channel, Side::Server).set_serialization_backend(NonZeroU32Encoding);
+
+        // sending message to ourselves is invalid behaviour
+        assert_matches!(sink.feed(Outgoing {
+            recipient: Some(0), 
+            msg: 0x11223344
+        }).await, Err(SendError(SendErrorReason::InvalidReceiverIndex { expected, actual})) if expected == 1 && actual == 0);
+        // sending zero causes encoding error
+        assert_matches!(
+            sink.feed(Outgoing {
+                recipient: Some(1),
+                msg: 0x00000000,
+            })
+            .await,
+            Err(SendError(SendErrorReason::SerializeMessage(
+                EncodeError::Zero
+            )))
+        );
+        // Sending a valid message
+        sink.feed(Outgoing {
+            recipient: Some(1),
+            msg: 0x11112222,
+        })
+        .await
+        .unwrap();
+        // Calling `start_send` without prior `poll_ready` call is an error
+        assert_matches!(
+            Pin::new(&mut sink).start_send(Outgoing {
+                recipient: Some(1),
+                msg: 0x11223344,
+            }),
+            Err(SendError(SendErrorReason::MissingPollReady))
+        );
+        // Sending another valid message
+        sink.feed(Outgoing {
+            recipient: Some(1),
+            msg: 0x33334444,
+        })
+        .await
+        .unwrap();
+        sink.flush().await.unwrap();
+
+        let buffer_should_be = [
+            0x00, 0x04, 0x11, 0x11, 0x22, 0x22, // 1st message
+            0x00, 0x04, 0x33, 0x33, 0x44, 0x44, // 2nd message
+        ];
+
+        assert_eq!(buffer, buffer_should_be);
+    }
+
     struct NonZeroU32Encoding;
     #[derive(Debug, thiserror::Error)]
-    enum InvalidInteger {
+    enum DecodeError {
         #[error("mismatched size of the message: expected 4 bytes, got {length} bytes")]
         MismatchedSize { length: usize },
         #[error("integer is zero")]
         Zero,
     }
+    #[derive(Debug, thiserror::Error)]
+    enum EncodeError {
+        #[error("integer is zero")]
+        Zero,
+        #[error(transparent)]
+        Io(#[from] io::Error),
+    }
 
-    impl SerializationBackend<NonZeroU32> for NonZeroU32Encoding {
-        type Error = io::Error;
+    // impl SerializationBackend<NonZeroU32> for NonZeroU32Encoding {
+    //     type Error = EncodeError;
+    //
+    //     fn serialize_into<W: Write>(
+    //         &self,
+    //         value: &NonZeroU32,
+    //         mut buffer: W,
+    //     ) -> Result<(), Self::Error> {
+    //         buffer.write_all(&value.get().to_be_bytes())?;
+    //         Ok(())
+    //     }
+    // }
+    impl SerializationBackend<u32> for NonZeroU32Encoding {
+        type Error = EncodeError;
 
-        fn serialize_into<W: Write>(
-            &self,
-            value: &NonZeroU32,
-            mut buffer: W,
-        ) -> Result<(), Self::Error> {
-            buffer.write_all(&value.get().to_be_bytes())
+        fn serialize_into<W: Write>(&self, value: &u32, mut buffer: W) -> Result<(), Self::Error> {
+            if *value == 0 {
+                return Err(EncodeError::Zero);
+            }
+            buffer.write_all(&value.to_be_bytes())?;
+            Ok(())
         }
     }
     impl DeserializationBackend<NonZeroU32> for NonZeroU32Encoding {
-        type Error = InvalidInteger;
+        type Error = DecodeError;
 
         fn deserialize(&self, bytes: &[u8]) -> Result<NonZeroU32, Self::Error> {
-            let bytes: [u8; 4] = bytes
-                .try_into()
-                .map_err(|_| InvalidInteger::MismatchedSize {
-                    length: bytes.len(),
-                })?;
+            let bytes: [u8; 4] = bytes.try_into().map_err(|_| DecodeError::MismatchedSize {
+                length: bytes.len(),
+            })?;
             let integer = u32::from_be_bytes(bytes);
-            integer.try_into().map_err(|_| InvalidInteger::Zero)
+            integer.try_into().map_err(|_| DecodeError::Zero)
         }
     }
 }
