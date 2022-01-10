@@ -47,12 +47,12 @@ use delivery_core::{Delivery, Incoming, Outgoing};
 /// ```
 ///
 /// _Note:_ if you indeed need to construct TwoParty over plain TCP, we've got it for you: see [insecure module](insecure)
-pub struct TwoParty<M, R, W, S = Bincode, D = Bincode> {
+pub struct Connection<M, R, W, S = Bincode, D = Bincode> {
     pub recv: Outgoings<M, R, D>,
     pub send: Incomings<W, S>,
 }
 
-impl<M, R, W> TwoParty<M, R, W> {
+impl<M, R, W> Connection<M, R, W> {
     /// Constructs a two party link from raw byte channels
     ///
     /// * `read_link` is an [`AsyncRead`] that reads bytes sent by counterparty
@@ -77,23 +77,23 @@ impl<M, R, W> TwoParty<M, R, W> {
     }
 }
 
-impl<M, R, W, S, D> TwoParty<M, R, W, S, D> {
-    pub fn set_serialization_backend<B>(self, backend: B) -> TwoParty<M, R, W, B, D> {
-        TwoParty {
+impl<M, R, W, S, D> Connection<M, R, W, S, D> {
+    pub fn set_serialization_backend<B>(self, backend: B) -> Connection<M, R, W, B, D> {
+        Connection {
             recv: self.recv,
             send: self.send.set_serialization_backend(backend),
         }
     }
 
-    pub fn set_deserialization_backend<B>(self, backend: B) -> TwoParty<M, R, W, S, B> {
-        TwoParty {
+    pub fn set_deserialization_backend<B>(self, backend: B) -> Connection<M, R, W, S, B> {
+        Connection {
             recv: self.recv.set_deserialization_backend(backend),
             send: self.send,
         }
     }
 }
 
-impl<M, R, W, S, D> Delivery<M> for TwoParty<M, R, W, S, D>
+impl<M, R, W, S, D> Delivery<M> for Connection<M, R, W, S, D>
 where
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin,
