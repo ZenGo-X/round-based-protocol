@@ -16,6 +16,7 @@ use std::error::Error;
 use futures::{Sink, Stream};
 
 pub mod serialization_backend;
+pub mod utils;
 
 /// A pair of incoming and outgoing delivery channels
 pub trait Delivery<M> {

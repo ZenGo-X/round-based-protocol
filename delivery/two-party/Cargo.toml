@@ -12,6 +12,8 @@ thiserror = "1"
 
 tokio = { version = "1.15", features = ["net"], optional = true }
 tokio-util = { version = "0.6", features = ["compat"], optional = true }
+tokio-rustls = { version = "0.23", optional = true }
+rustls = { version = "0.20", default-features = false, optional = true }
 
 delivery-core = { path = "../core" }
 delivery-utils = { path = "../utils" }
@@ -23,5 +25,6 @@ futures-test = "0.3"
 matches = "0.1"
 
 [features]
-default = []
+default = ["tls"]
 insecure = ["tokio", "tokio-util"]
+tls = ["tokio", "tokio-util", "tokio-rustls", "rustls"]

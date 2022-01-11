@@ -29,26 +29,6 @@ thiserror = "1"
 delivery-core = { path = "../delivery/core" }
 two-party-delivery = { path = "../delivery/two-party", optional = true }
 
-## tls support
-#rustls = { version = "0.19", features = ["dangerous_configuration"], optional = true }
-#webpki = { version = "0.21", optional = true }
-#tokio-rustls = { version = "0.22", optional = true }
-#
-## trusted delivery support
-#sha2 = { version = "0.9", optional = true }
-#secp256k1 = { version = "0.20", features = ["global-context"], optional = true }
-#never = { version = "0.1", optional = true }
-#generic-array = { version = "0.14", optional = true }
-#aes-gcm = { version = "0.9", optional = true }
-#rand = { version = "0.8", optional = true }
-#serde_bytes = { version = "0.11", optional = true }
-#aead = { version = "0.4", optional = true }
-#hkdf = { version = "0.11", optional = true }
-#hex = { version = "0.4", optional = true, default-features = false }
-#
-## unstable features
-#rcgen = { version = "0.8", optional = true }
-
 [dev-dependencies]
 rand = "0.8"
 rand_chacha = "0.3"
@@ -64,11 +44,8 @@ proptest = "1"
 default = ["two-party"]
 two-party = ["two-party-delivery"]
 two-party-insecure = ["two-party", "two-party-delivery/insecure"]
+mock-tls = ["delivery-core/mock-tls"]
 derive = ["round-based-derive"]
-#default = ["tls"]
-#tls = ["rustls", "webpki", "tokio-rustls"]
-#trusted-delivery = ["tls", "secp256k1", "secp256k1/serde", "sha2", "never", "generic-array", "aes-gcm", "rand", "serde_bytes", "aead", "hkdf", "hex"]
-#unstable = ["rcgen"]
 
 [[test]]
 name = "derive"
