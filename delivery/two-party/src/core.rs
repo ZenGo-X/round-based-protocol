@@ -347,6 +347,13 @@ where
 
         let message_size = loop {
             if let Some(message_size) = this.parse_message_size().map(usize::from) {
+                if message_size > this.buffer.len() - 2 {
+                    return Poll::Ready(Some(Err(RecvErrorReason::MessageTooLarge {
+                        message_size,
+                        limit: this.buffer.len() - 2,
+                    }
+                    .into())));
+                }
                 if message_size + 2 <= this.buffer_filled {
                     break message_size;
                 }
@@ -412,6 +419,8 @@ pub struct RecvError<S>(#[from] RecvErrorReason<S>);
 
 #[derive(Debug, Error)]
 pub enum RecvErrorReason<S> {
+    #[error("message is too large: size={message_size}bytes, limit={limit}bytes")]
+    MessageTooLarge { message_size: usize, limit: usize },
     #[error("could not deserialize message")]
     DeserializeMessage(#[source] S),
     #[error(transparent)]
@@ -621,6 +630,21 @@ mod tests {
         ];
 
         assert_eq!(buffer, buffer_should_be);
+    }
+
+    #[test]
+    async fn receiving_too_large_message_results_in_error() {
+        let raw = &[0x00, 0x05, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05];
+        let mut stream = Incomings::with_limit(raw.as_ref(), Side::Server, 4)
+            .set_deserialization_backend(NonZeroU32Encoding);
+        let result = stream.next().await;
+        assert_matches!(
+            result,
+            Some(Err(RecvError(RecvErrorReason::MessageTooLarge {
+                message_size: 5,
+                limit: 4,
+            })))
+        );
     }
 
     struct NonZeroU32Encoding;
