@@ -1,10 +1,13 @@
 [workspace]
 members = [
     "round-based",
+    "round-based-tests",
     "round-based-derive",
     "delivery/core",
     "delivery/trusted-delivery",
     "delivery/two-party",
     "delivery/utils",
+    "examples/random-generation-protocol",
+    "examples/two-party-random-generation",
 ]
 

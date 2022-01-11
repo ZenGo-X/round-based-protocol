@@ -194,7 +194,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ReceiveError<StoreErr, IncomingErr> {
     /// Receiving next incoming message resulted into error
     ///
@@ -202,6 +202,7 @@ pub enum ReceiveError<StoreErr, IncomingErr> {
     ///
     /// `store_error` is an error produced by message store that should explain that received messages
     /// are not enough to proceed to the next round
+    #[error("receiving next incoming message resulted into error")]
     IncomingChannelBroken {
         receive_error: Option<IncomingErr>,
         store_error: StoreErr,
@@ -211,20 +212,24 @@ pub enum ReceiveError<StoreErr, IncomingErr> {
     ///
     /// `store_error` is an error produced by message store that should explain that received messages
     /// are not enough to proceed to the next round
+    #[error("receiving next incoming message resulted into error: eof reached")]
     IncomingChannelClosed { store_error: StoreErr },
 
     /// Messages store misbehaved
     ///
     /// This error means that message store refused to return output after telling that
     /// it received enough messages. This is a bug of message store.
+    #[error("buggy MessageStore: it didn't return output after receiving enough messages")]
     MessageStoreDidntOutputAfterReceivingEnoughMessages { store_error: StoreErr },
 
     /// Round was forced to proceed, but it has not received enough messages
+    #[error("round was forced to proceed, but it has not received enough messages")]
     NotEnoughMessages { store_error: StoreErr },
 
-    /// The task that was processing incoming messages has gone
+    /// The task that was processing incoming messages is gone
     ///
     /// The error that caused this unexpected behaviour must be logged
+    #[error("the task processing incoming messages is gone")]
     Gone,
 }
 

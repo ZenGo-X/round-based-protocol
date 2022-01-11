@@ -11,9 +11,11 @@
 //!
 //! We provide several delivery implementations for most common cases. See [two_party] module.
 
-pub mod serialization_backend;
+use std::error::Error;
 
 use futures::{Sink, Stream};
+
+pub mod serialization_backend;
 
 /// A pair of incoming and outgoing delivery channels
 pub trait Delivery<M> {
@@ -22,9 +24,9 @@ pub trait Delivery<M> {
     /// Incoming delivery channel
     type Receive: Stream<Item = Result<Incoming<M>, Self::ReceiveError>> + Send + Unpin + 'static;
     /// Error of outgoing delivery channel
-    type SendError;
+    type SendError: Error;
     /// Error of incoming delivery channel
-    type ReceiveError: Send + 'static;
+    type ReceiveError: Error + Send + 'static;
     /// Returns a pair of incoming and outgoing delivery channels
     fn split(self) -> (Self::Receive, Self::Send);
 }

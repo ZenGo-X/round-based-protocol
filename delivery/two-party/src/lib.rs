@@ -1,3 +1,6 @@
 pub mod core;
+
 #[cfg(feature = "insecure")]
-pub mod tcp;
+mod tcp;
+#[cfg(feature = "insecure")]
+pub use self::tcp::*;

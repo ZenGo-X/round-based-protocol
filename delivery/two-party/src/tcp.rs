@@ -48,13 +48,13 @@
 //! [examples/mpc_random_generation.rs]: https://github.com/ZenGo-X/round-based-protocol/blob/main/round-based/examples/mpc_random_generation.rs
 
 use std::net::SocketAddr;
-use std::ops;
+use std::{io, ops};
 
-use tokio::io;
 use tokio::net::{
     self,
     tcp::{OwnedReadHalf, OwnedWriteHalf},
 };
+use tokio_util::compat::{Compat, TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use phantom_type::PhantomType;
 
@@ -64,7 +64,7 @@ use crate::core::{Connection, Side};
 
 /// A connection established between two parties over plain TCP
 pub type TcpConnection<M, S = Bincode, D = Bincode> =
-    Connection<M, OwnedReadHalf, OwnedWriteHalf, S, D>;
+    Connection<M, Compat<OwnedReadHalf>, Compat<OwnedWriteHalf>, S, D>;
 
 /// A party of two party protocol who runs a TCP server
 ///
@@ -147,9 +147,14 @@ impl<M, S: Clone, D: Clone> TcpServer<M, S, D> {
         let (conn, remote_addr) = self.listener.accept().await?;
         let (recv, send) = conn.into_split();
         Ok((
-            Connection::with_limit(Side::Server, recv, send, self.msg_size_limit)
-                .set_serialization_backend(self.serializer.clone())
-                .set_deserialization_backend(self.deserializer.clone()),
+            Connection::with_limit(
+                Side::Server,
+                recv.compat(),
+                send.compat_write(),
+                self.msg_size_limit,
+            )
+            .set_serialization_backend(self.serializer.clone())
+            .set_deserialization_backend(self.deserializer.clone()),
             remote_addr,
         ))
     }
@@ -237,131 +242,19 @@ impl<M, S: Clone, D: Clone> TcpClientBuilder<M, S, D> {
     /// Constructs TwoPartyTcp from TcpStream
     pub fn connected(&self, tcp_stream: net::TcpStream) -> io::Result<TcpConnection<M, S, D>> {
         let (recv, send) = tcp_stream.into_split();
-        Ok(
-            Connection::with_limit(Side::Client, recv, send, self.msg_size_limit)
-                .set_serialization_backend(self.serializer.clone())
-                .set_deserialization_backend(self.deserializer.clone()),
+        Ok(Connection::with_limit(
+            Side::Client,
+            recv.compat(),
+            send.compat_write(),
+            self.msg_size_limit,
         )
+        .set_serialization_backend(self.serializer.clone())
+        .set_deserialization_backend(self.deserializer.clone()))
     }
 }
 
 impl<M> Default for TcpClientBuilder<M> {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fmt::Debug;
-
-    use futures::TryStreamExt;
-    use tokio::task::{spawn_local, LocalSet};
-
-    use serde::{Deserialize, Serialize};
-
-    use crate::delivery::{Delivery, Incoming, Outgoing, OutgoingDeliveryExt};
-
-    use super::{TcpClientBuilder, TcpServer};
-
-    #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
-    pub struct TestMessage(u16);
-
-    /// This is a demonstrative test that shows how we can simply deploy a TCP server/client that can
-    /// exchange messages
-    #[tokio::test]
-    async fn exchange_server_client_messages() {
-        let local_set = LocalSet::new();
-
-        let mut server = TcpServer::<TestMessage>::bind("127.0.0.1:0").await.unwrap();
-        let server_addr = server.local_addr().unwrap();
-
-        // The client
-        let client = local_set.spawn_local(async move {
-            let link = TcpClientBuilder::new()
-                .connect::<TestMessage, _>(server_addr)
-                .await
-                .unwrap();
-            let (recv, mut send) = link.split();
-
-            // Client sends 1+2+3 messages to the server
-            let sending = spawn_local(async move {
-                for i in 1..=3 {
-                    let msgs = vec![TestMessage(i); usize::from(i)];
-                    send.send_all(msgs.iter().map(|msg| Outgoing {
-                        recipient: Some(0),
-                        msg,
-                    }))
-                    .await
-                    .unwrap()
-                }
-            });
-
-            // Client receives 1+2+3 messages from the server and asserts that they are what we
-            // expected to receive
-            let receiving = spawn_local(async move {
-                let msgs = recv.try_collect::<Vec<_>>().await.unwrap();
-                let expected_msgs = (1..=3)
-                    .flat_map(|i| {
-                        vec![
-                            Incoming {
-                                sender: 0,
-                                msg: TestMessage(i + 100)
-                            };
-                            usize::from(i)
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                assert_eq!(msgs, expected_msgs);
-            });
-
-            sending.await.unwrap();
-            receiving.await.unwrap();
-        });
-
-        // The server
-        let server = local_set.spawn_local(async move {
-            let (link, _addr) = server.accept().await.unwrap();
-            let (recv, mut send) = link.split();
-
-            // Server sends 1+2+3 messages to the client. Note that messages payload is different from
-            // what client sends to us
-            let sending = spawn_local(async move {
-                for i in 1..=3 {
-                    let msgs = vec![TestMessage(i + 100); usize::from(i)];
-                    send.send_all(msgs.iter().map(|msg| Outgoing {
-                        recipient: Some(1),
-                        msg,
-                    }))
-                    .await
-                    .unwrap();
-                }
-            });
-
-            // Server receives 1+2+3 messages from the client and asserts that they are what we
-            // expected to receive
-            let receiving = spawn_local(async move {
-                let msgs = recv.try_collect::<Vec<_>>().await.unwrap();
-                let expected_msgs = (1..=3)
-                    .flat_map(|i| {
-                        vec![
-                            Incoming {
-                                sender: 1,
-                                msg: TestMessage(i)
-                            };
-                            usize::from(i)
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                assert_eq!(msgs, expected_msgs);
-            });
-
-            sending.await.unwrap();
-            receiving.await.unwrap();
-        });
-
-        local_set.await;
-        client.await.unwrap();
-        server.await.unwrap();
     }
 }

@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use phantom_type::PhantomType;
 
 use crate::blocking::{Blocking, SpawnBlocking, TokioSpawnBlocking};
@@ -13,8 +15,8 @@ pub trait Mpc: internal::Sealed {
     >;
     type SpawnBlocking: SpawnBlocking;
 
-    type SendError;
-    type ReceiveError: Send + Unpin + 'static;
+    type SendError: Error;
+    type ReceiveError: Error + Send + Unpin + 'static;
 
     fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::SpawnBlocking>;
 }
@@ -74,7 +76,8 @@ impl<M, D, B> Mpc for MpcParty<M, D, B>
 where
     M: ProtocolMessage + Send + 'static,
     D: Delivery<M>,
-    D::ReceiveError: Send + Unpin + 'static,
+    D::SendError: Error,
+    D::ReceiveError: Error + Send + Unpin + 'static,
     B: SpawnBlocking,
 {
     type ProtocolMessage = M;

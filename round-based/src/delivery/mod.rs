@@ -12,3 +12,8 @@
 
 #[doc(inline)]
 pub use delivery_core::*;
+
+#[cfg(feature = "two-party")]
+pub mod two_party {
+    pub use two_party_delivery::*;
+}

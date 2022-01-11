@@ -1,32 +1,31 @@
 use futures::SinkExt;
-use rand::{RngCore, SeedableRng};
-use rand_chacha::ChaCha20Rng;
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
 use sha2::{digest::Output, Digest, Sha256};
 
 use round_based::rounds::{
     store::{RoundInput, RoundInputError},
     ReceiveError, Rounds,
 };
-use round_based::simulation::Simulation;
 use round_based::{Delivery, Mpc, MpcParty, Outgoing, ProtocolMessage};
 
-#[derive(Clone, Debug, PartialEq, ProtocolMessage)]
+#[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]
 pub enum Msg {
     CommitMsg(CommitMsg),
     DecommitMsg(DecommitMsg),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CommitMsg {
     pub commitment: Output<Sha256>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DecommitMsg {
     pub randomness: [u8; 32],
 }
 
-async fn protocol_of_random_generation<R, M>(
+pub async fn protocol_of_random_generation<R, M>(
     party: M,
     i: u16,
     n: u16,
@@ -112,38 +111,55 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum Error<RecvErr, SendErr> {
-    Round1Send(SendErr),
-    Round1Receive(ReceiveError<RoundInputError, RecvErr>),
-    Round1MismatchedOwnMessage(RoundInputError),
-    Round2Send(SendErr),
-    Round2Receive(ReceiveError<RoundInputError, RecvErr>),
-    Round2MismatchedOwnMessage(RoundInputError),
+    #[error("send a message at round 1")]
+    Round1Send(#[source] SendErr),
+    #[error("receive a message at round 1")]
+    Round1Receive(#[source] ReceiveError<RoundInputError, RecvErr>),
+    #[error("own message mismatched at round 1")]
+    Round1MismatchedOwnMessage(#[source] RoundInputError),
+    #[error("send a message at round 2")]
+    Round2Send(#[source] SendErr),
+    #[error("receive a message at round 2")]
+    Round2Receive(#[source] ReceiveError<RoundInputError, RecvErr>),
+    #[error("own message mismatched at round 2")]
+    Round2MismatchedOwnMessage(#[source] RoundInputError),
 
+    #[error("malicious parties: {guilty_parties:?}")]
     PartiesOpenedRandomnessDoesntMatchCommitment { guilty_parties: Vec<u16> },
 }
 
-#[tokio::main]
-async fn main() {
-    let n: u16 = 5;
+#[cfg(test)]
+mod tests {
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
 
-    let mut simulation = Simulation::<Msg>::new();
-    let mut party_output = vec![];
+    use round_based::simulation::Simulation;
 
-    for i in 0..n {
-        let party = simulation.add_party();
-        let rng = ChaCha20Rng::from_entropy();
-        let output = protocol_of_random_generation(party, i, n, rng);
-        party_output.push(output);
+    use super::{protocol_of_random_generation, Msg};
+
+    #[tokio::test]
+    async fn main() {
+        let n: u16 = 5;
+
+        let mut simulation = Simulation::<Msg>::new();
+        let mut party_output = vec![];
+
+        for i in 0..n {
+            let party = simulation.add_party();
+            let rng = ChaCha20Rng::from_entropy();
+            let output = protocol_of_random_generation(party, i, n, rng);
+            party_output.push(output);
+        }
+
+        let output = futures::future::try_join_all(party_output).await.unwrap();
+
+        // Assert that all parties outputed the same randomness
+        for i in 1..n {
+            assert_eq!(output[0], output[usize::from(i)]);
+        }
+
+        println!("Output randomness: {}", hex::encode(&output[0]));
     }
-
-    let output = futures::future::try_join_all(party_output).await.unwrap();
-
-    // Assert that all parties outputed the same randomness
-    for i in 1..n {
-        assert_eq!(output[0], output[usize::from(i)]);
-    }
-
-    println!("Output randomness: {}", hex::encode(&output[0]));
 }
