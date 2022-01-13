@@ -1,18 +1,41 @@
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+
+use thiserror::Error;
 
 use tokio::sync::{Notify, RwLock};
 
 use crate::crypto::CryptoSuite;
 
-use crate::messages::{ForwardMsgHeader, PublishMessageHeader};
+use crate::messages::{ForwardMsgHeader, PublishMessageHeader, RoomId};
+
+pub struct Db<C: CryptoSuite> {
+    rooms: RwLock<HashMap<RoomId, Arc<Room<C>>>>,
+}
+
+impl<C: CryptoSuite> Db<C> {
+    pub fn empty() -> Self {
+        Self {
+            rooms: Default::default(),
+        }
+    }
+
+    // pub fn get_room_or_create_empty(&self, room_id: RoomId)
+}
 
 pub struct Room<C: CryptoSuite> {
     history: RwLock<RoomHistory<C>>,
     history_changed: Notify,
+
+    subscribers: AtomicUsize,
+    writers: AtomicUsize,
 }
 
 impl<C: CryptoSuite> Room<C> {
     pub fn subscribe(self: Arc<Self>, subscriber: C::VerificationKey) -> Subscription<C> {
+        self.subscribers.fetch_add(1, Ordering::Relaxed);
+
         Subscription {
             subscriber,
             room: self,
@@ -21,32 +44,13 @@ impl<C: CryptoSuite> Room<C> {
         }
     }
 
-    pub async fn publish_message(
-        &self,
-        author: C::VerificationKey,
-        header: PublishMessageHeader<C>,
-        msg: &[u8],
-    ) -> Result<(), MismatchedSignature> {
-        debug_assert_eq!(usize::from(header.message_body_len), msg.len());
-        header.verify(&author, msg).or(Err(MismatchedSignature))?;
+    pub async fn add_writer(self: Arc<Self>, writer_identity: C::VerificationKey) -> Writer<C> {
+        self.writers.fetch_add(1, Ordering::Relaxed);
 
-        let mut history = self.history.write().await;
-
-        let offset = history.concated_messages.len();
-        history.concated_messages.resize(offset + msg.len(), 0);
-        history.concated_messages[offset..].copy_from_slice(msg);
-
-        history.headers.push(MessageHeader {
-            offset,
-            len: header.message_body_len,
-            sender: author,
-            recipient: header.recipient,
-            signature: header.signature,
-        });
-
-        self.history_changed.notify_waiters();
-
-        Ok(())
+        Writer {
+            writer_identity,
+            room: self,
+        }
     }
 }
 
@@ -102,6 +106,54 @@ impl<C: CryptoSuite> Subscription<C> {
             drop(history);
             notification.await;
         }
+    }
+}
+
+impl<C: CryptoSuite> Drop for Subscription<C> {
+    fn drop(&mut self) {
+        self.room.subscribers.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+pub struct Writer<C: CryptoSuite> {
+    writer_identity: C::VerificationKey,
+    room: Arc<Room<C>>,
+}
+
+impl<C: CryptoSuite> Writer<C> {
+    pub async fn publish_message(
+        &self,
+        header: PublishMessageHeader<C>,
+        msg: &[u8],
+    ) -> Result<(), MismatchedSignature> {
+        debug_assert_eq!(usize::from(header.message_body_len), msg.len());
+        header
+            .verify(&self.writer_identity, msg)
+            .or(Err(MismatchedSignature))?;
+
+        let mut history = self.room.history.write().await;
+
+        let offset = history.concated_messages.len();
+        history.concated_messages.resize(offset + msg.len(), 0);
+        history.concated_messages[offset..].copy_from_slice(msg);
+
+        history.headers.push(MessageHeader {
+            offset,
+            len: header.message_body_len,
+            sender: self.writer_identity.clone(),
+            recipient: header.recipient,
+            signature: header.signature,
+        });
+
+        self.room.history_changed.notify_waiters();
+
+        Ok(())
+    }
+}
+
+impl<C: CryptoSuite> Drop for Writer<C> {
+    fn drop(&mut self) {
+        self.room.writers.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
