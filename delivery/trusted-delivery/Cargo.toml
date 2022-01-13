@@ -13,10 +13,12 @@ aes-gcm = "0.9"
 rand = "0.8"
 serde_bytes = "0.11"
 aead = "0.4"
-hex = { version = "0.4", default-features = false }
+hex = "0.4"
 phantom-type = "0.3"
 serde = "1"
+
 thiserror = "1"
+educe = "0.4"
 
 generic-array = "0.14"
 typenum = "=1.13"

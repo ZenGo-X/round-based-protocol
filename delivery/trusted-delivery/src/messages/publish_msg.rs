@@ -4,6 +4,7 @@ use generic_array::typenum::{Unsigned, U1, U2};
 use generic_array::GenericArray;
 use sha2::Digest;
 
+use educe::Educe;
 use thiserror::Error;
 
 use crate::crypto::{CryptoSuite, DigestExt, InvalidSignature, Serializable};
@@ -11,6 +12,8 @@ use crate::generic_array_ext::Sum;
 
 use super::{DataMsgParser, FixedSizeMessage};
 
+#[derive(Educe)]
+#[educe(Clone, PartialEq, Eq)]
 pub struct PublishMessageHeader<C: CryptoSuite> {
     pub recipient: Option<C::VerificationKey>,
     pub signature: C::Signature,
@@ -25,7 +28,7 @@ impl<C: CryptoSuite> PublishMessageHeader<C> {
         tag: &[u8],
     ) -> Self {
         let signature = C::Digest::new()
-            .chain(&[u8::from(recipient.is_some())])
+            .chain(&[u8::from(recipient.is_none())])
             .chain(
                 recipient
                     .as_ref()
@@ -50,7 +53,7 @@ impl<C: CryptoSuite> PublishMessageHeader<C> {
         msg: &[u8],
     ) -> Result<(), InvalidSignature> {
         C::Digest::new()
-            .chain(&[u8::from(self.recipient.is_some())])
+            .chain(&[u8::from(self.recipient.is_none())])
             .chain(
                 self.recipient
                     .as_ref()
@@ -127,6 +130,16 @@ impl<C: CryptoSuite> FixedSizeMessage for PublishMessageHeader<C> {
         msg
     }
 }
+
+// impl<C: CryptoSuite> Clone for PublishMessageHeader<C> {
+//     fn clone(&self) -> Self {
+//         Self {
+//             recipient: self.recipient.clone(),
+//             signature: self.signature.clone(),
+//             message_body_len: self.message_body_len,
+//         }
+//     }
+// }
 
 pub struct PublishMsg<C: CryptoSuite> {
     sender_identity: C::VerificationKey,

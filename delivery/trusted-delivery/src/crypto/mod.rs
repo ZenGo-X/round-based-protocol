@@ -60,11 +60,14 @@ pub trait CryptoSuite {
         + Send
         + Sync
         + Unpin
+        + fmt::Debug
         + 'static;
     type Signature: Serializable<Size = Self::SignatureSize, Error = InvalidSignature>
+        + Eq
         + Send
         + Sync
         + Unpin
+        + fmt::Debug
         + 'static;
     type KeyExchangeLocalShare: Send + Sync + Unpin + 'static;
     type KeyExchangeRemoteShare: Serializable<Size = Self::KeyExchangeRemoteShareSize, Error = InvalidRemoteShare>

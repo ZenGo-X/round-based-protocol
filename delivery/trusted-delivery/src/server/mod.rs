@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::hash_map::{Entry, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use thiserror::Error;
 
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Notify, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::crypto::CryptoSuite;
 
@@ -21,7 +21,73 @@ impl<C: CryptoSuite> Db<C> {
         }
     }
 
-    // pub fn get_room_or_create_empty(&self, room_id: RoomId)
+    pub async fn get_room_or_create_empty<'db>(
+        &'db self,
+        room_id: RoomId,
+    ) -> LockedDb<'db, C, Arc<Room<C>>> {
+        let rooms = self.rooms.read().await;
+
+        match rooms.get(&room_id) {
+            Some(room) if !room.is_abandoned() => {
+                return LockedDb {
+                    inner: room.clone(),
+                    _lock: DbLock::ReadLock(rooms),
+                };
+            }
+            _ => (),
+        }
+
+        drop(rooms);
+        let mut rooms = self.rooms.write().await;
+
+        match rooms.entry(room_id) {
+            Entry::Occupied(room) if !room.get().is_abandoned() => LockedDb {
+                inner: room.get().clone(),
+                _lock: DbLock::ReadLock(rooms.downgrade()),
+            },
+            Entry::Occupied(mut entry) => {
+                let room = Arc::new(Room::empty());
+                *entry.get_mut() = room.clone();
+                LockedDb {
+                    inner: room,
+                    _lock: DbLock::WriteLock(rooms),
+                }
+            }
+            Entry::Vacant(entry) => {
+                let room = entry.insert(Arc::new(Room::empty())).clone();
+                LockedDb {
+                    inner: room,
+                    _lock: DbLock::WriteLock(rooms),
+                }
+            }
+        }
+    }
+}
+
+pub struct LockedDb<'db, C: CryptoSuite, T> {
+    inner: T,
+    _lock: DbLock<'db, C>,
+}
+
+impl<'db, C: CryptoSuite, T> LockedDb<'db, C, T> {
+    pub fn map<K, F>(self, f: F) -> LockedDb<'db, C, K>
+    where
+        F: FnOnce(T) -> K,
+    {
+        LockedDb {
+            inner: f(self.inner),
+            _lock: self._lock,
+        }
+    }
+
+    pub fn unlock_db(self) -> T {
+        self.inner
+    }
+}
+
+enum DbLock<'db, C: CryptoSuite> {
+    ReadLock(RwLockReadGuard<'db, HashMap<RoomId, Arc<Room<C>>>>),
+    WriteLock(RwLockWriteGuard<'db, HashMap<RoomId, Arc<Room<C>>>>),
 }
 
 pub struct Room<C: CryptoSuite> {
@@ -33,6 +99,19 @@ pub struct Room<C: CryptoSuite> {
 }
 
 impl<C: CryptoSuite> Room<C> {
+    fn empty() -> Self {
+        Self {
+            history: RwLock::new(RoomHistory {
+                headers: vec![],
+                concated_messages: vec![],
+            }),
+            history_changed: Notify::new(),
+
+            subscribers: AtomicUsize::new(0),
+            writers: AtomicUsize::new(0),
+        }
+    }
+
     pub fn subscribe(self: Arc<Self>, subscriber: C::VerificationKey) -> Subscription<C> {
         self.subscribers.fetch_add(1, Ordering::Relaxed);
 
@@ -44,13 +123,17 @@ impl<C: CryptoSuite> Room<C> {
         }
     }
 
-    pub async fn add_writer(self: Arc<Self>, writer_identity: C::VerificationKey) -> Writer<C> {
+    pub fn add_writer(self: Arc<Self>, writer_identity: C::VerificationKey) -> Writer<C> {
         self.writers.fetch_add(1, Ordering::Relaxed);
 
         Writer {
             writer_identity,
             room: self,
         }
+    }
+
+    pub fn is_abandoned(&self) -> bool {
+        self.subscribers.load(Ordering::Relaxed) == 0 && self.writers.load(Ordering::Relaxed) == 0
     }
 }
 
@@ -94,7 +177,7 @@ impl<C: CryptoSuite> Subscription<C> {
 
                 let header = ForwardMsgHeader {
                     sender: header.sender.clone(),
-                    is_broadcast: header.recipient.is_some(),
+                    is_broadcast: header.recipient.is_none(),
                     signature: header.signature.clone(),
                     data_len: header.len,
                 };
@@ -160,3 +243,82 @@ impl<C: CryptoSuite> Drop for Writer<C> {
 #[derive(Debug, Error)]
 #[error("message signature doesn't match its content")]
 pub struct MismatchedSignature;
+
+#[cfg(test)]
+mod tests {
+    use std::iter;
+
+    use crate::crypto::default_suite::DefaultSuite;
+    use crate::crypto::*;
+
+    use super::*;
+
+    const TEST_ROOM: RoomId = *b"0123456789abcdef0123456789abcdef";
+
+    #[tokio::test]
+    async fn message_is_broadcasted_to_everyone() {
+        message_is_broadcasted_to_everyone_generic::<DefaultSuite>().await;
+    }
+
+    async fn message_is_broadcasted_to_everyone_generic<C: CryptoSuite>() {
+        let db = Db::<C>::empty();
+
+        let mut parties = MockedParties::generate(&db, TEST_ROOM, 3).await;
+
+        let msg = b"hello everyone, ready to generate some threshold keys?";
+        let publish_header = PublishMessageHeader::<C>::new(&parties.sk[0], None, msg, &[]);
+        let forward_header = ForwardMsgHeader::new(&parties.sk[0], None, msg);
+
+        parties.writer[0]
+            .publish_message(publish_header, msg.as_ref())
+            .await
+            .unwrap();
+
+        for subscription in &mut parties.subscription {
+            let (received_header, received_msg) = subscription.next().await;
+            assert_eq!(forward_header, received_header);
+            assert_eq!(msg.as_ref(), received_msg);
+        }
+    }
+
+    struct MockedParties<C: CryptoSuite> {
+        pub sk: Vec<C::SigningKey>,
+        pub pk: Vec<C::VerificationKey>,
+        pub subscription: Vec<Subscription<C>>,
+        pub writer: Vec<Writer<C>>,
+    }
+
+    impl<C: CryptoSuite> MockedParties<C> {
+        pub async fn generate(db: &Db<C>, room_id: RoomId, n: usize) -> Self {
+            let sk: Vec<C::SigningKey> = iter::repeat_with(|| C::SigningKey::generate())
+                .take(n)
+                .collect();
+            let pk: Vec<C::VerificationKey> = sk.iter().map(|sk| sk.verification_key()).collect();
+
+            let mut subscription = vec![];
+            let mut writer = vec![];
+            for pk_i in &pk {
+                let subscription_i = db
+                    .get_room_or_create_empty(room_id)
+                    .await
+                    .map(|room| room.subscribe(pk_i.clone()))
+                    .unlock_db();
+                subscription.push(subscription_i);
+
+                let writer_i = db
+                    .get_room_or_create_empty(room_id)
+                    .await
+                    .map(|room| room.add_writer(pk_i.clone()))
+                    .unlock_db();
+                writer.push(writer_i);
+            }
+
+            Self {
+                sk,
+                pk,
+                subscription,
+                writer,
+            }
+        }
+    }
+}

@@ -4,6 +4,7 @@ use generic_array::typenum::{Unsigned, U1, U2};
 use generic_array::GenericArray;
 use sha2::Digest;
 
+use educe::Educe;
 use thiserror::Error;
 
 use crate::crypto::{CryptoSuite, DigestExt, InvalidSignature, Serializable, SigningKey};
@@ -11,6 +12,8 @@ use crate::generic_array_ext::Sum;
 
 use super::{DataMsgParser, FixedSizeMessage};
 
+#[derive(Educe)]
+#[educe(Clone, PartialEq, Eq, Debug)]
 pub struct ForwardMsgHeader<C: CryptoSuite> {
     pub sender: C::VerificationKey,
     pub is_broadcast: bool,
