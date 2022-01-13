@@ -1,8 +1,6 @@
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
-}
+pub mod client;
+pub mod crypto;
+pub mod messages;
+pub mod server;
+
+mod generic_array_ext;
