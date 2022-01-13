@@ -26,8 +26,10 @@ impl<C: CryptoSuite> Room<C> {
         author: C::VerificationKey,
         header: PublishMessageHeader<C>,
         msg: &[u8],
-    ) {
+    ) -> Result<(), MismatchedSignature> {
         debug_assert_eq!(usize::from(header.message_body_len), msg.len());
+        header.verify(&author, msg).or(Err(MismatchedSignature))?;
+
         let mut history = self.history.write().await;
 
         let offset = history.concated_messages.len();
@@ -43,6 +45,8 @@ impl<C: CryptoSuite> Room<C> {
         });
 
         self.history_changed.notify_waiters();
+
+        Ok(())
     }
 }
 
@@ -100,3 +104,7 @@ impl<C: CryptoSuite> Subscription<C> {
         }
     }
 }
+
+#[derive(Debug, Error)]
+#[error("message signature doesn't match its content")]
+pub struct MismatchedSignature;
