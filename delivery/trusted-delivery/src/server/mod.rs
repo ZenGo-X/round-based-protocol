@@ -254,6 +254,7 @@ mod tests {
     use super::*;
 
     const TEST_ROOM: RoomId = *b"0123456789abcdef0123456789abcdef";
+    const ANOTHER_ROOM: RoomId = *b"abcdabcdabcdabcdabcdabcdabcdabcd";
 
     #[tokio::test]
     async fn message_is_broadcasted_to_everyone() {
@@ -262,22 +263,108 @@ mod tests {
 
     async fn message_is_broadcasted_to_everyone_generic<C: CryptoSuite>() {
         let db = Db::<C>::empty();
-
-        let mut parties = MockedParties::generate(&db, TEST_ROOM, 3).await;
+        let mut group = MockedParties::generate(&db, TEST_ROOM, 3).await;
 
         let msg = b"hello everyone, ready to generate some threshold keys?";
-        let publish_header = PublishMessageHeader::<C>::new(&parties.sk[0], None, msg, &[]);
-        let forward_header = ForwardMsgHeader::new(&parties.sk[0], None, msg);
+        let publish_header = PublishMessageHeader::<C>::new(&group.sk[0], None, msg, &[]);
+        let forward_header = ForwardMsgHeader::new(&group.sk[0], None, msg);
 
-        parties.writer[0]
+        group.writer[0]
             .publish_message(publish_header, msg.as_ref())
             .await
             .unwrap();
 
-        for subscription in &mut parties.subscription {
+        for subscription in &mut group.subscription {
             let (received_header, received_msg) = subscription.next().await;
             assert_eq!(forward_header, received_header);
             assert_eq!(msg.as_ref(), received_msg);
+        }
+    }
+
+    #[tokio::test]
+    async fn p2p_message_is_sent_only_to_destination() {
+        p2p_message_is_sent_only_to_destination_generic::<DefaultSuite>().await;
+    }
+
+    async fn p2p_message_is_sent_only_to_destination_generic<C: CryptoSuite>() {
+        let db = Db::<C>::empty();
+        let mut group = MockedParties::generate(&db, TEST_ROOM, 3).await;
+
+        let direct_message = b"this is a direct message that'll be received only by destination";
+        let publish_header1 = PublishMessageHeader::<C>::new(
+            &group.sk[0],
+            Some(group.pk[1].clone()),
+            direct_message,
+            &[],
+        );
+        let forward_header1 =
+            ForwardMsgHeader::<C>::new(&group.sk[0], Some(&group.pk[1]), direct_message);
+
+        let public_message = b"this message is seen by everyone";
+        let publish_header2 =
+            PublishMessageHeader::<C>::new(&group.sk[2], None, public_message, &[]);
+        let forward_header2 = ForwardMsgHeader::<C>::new(&group.sk[2], None, public_message);
+
+        group.writer[0]
+            .publish_message(publish_header1, direct_message)
+            .await
+            .unwrap();
+        group.writer[2]
+            .publish_message(publish_header2, public_message)
+            .await
+            .unwrap();
+
+        for (i, subscription_i) in group.subscription.iter_mut().enumerate() {
+            if i == 1 {
+                let (header, msg) = subscription_i.next().await;
+                assert_eq!(header, forward_header1);
+                assert_eq!(msg, direct_message.as_ref());
+            }
+
+            let (header, msg) = subscription_i.next().await;
+            assert_eq!(header, forward_header2);
+            assert_eq!(msg, public_message.as_ref());
+        }
+    }
+
+    #[tokio::test]
+    async fn message_appears_only_in_its_room() {
+        message_appears_only_in_its_room_generic::<DefaultSuite>().await
+    }
+
+    async fn message_appears_only_in_its_room_generic<C: CryptoSuite>() {
+        let db = Db::<C>::empty();
+
+        let mut group1 = MockedParties::generate(&db, TEST_ROOM, 3).await;
+        let mut group2 = MockedParties::generate(&db, ANOTHER_ROOM, 2).await;
+
+        let msg1 = b"some message";
+        let publish_header1 = PublishMessageHeader::<C>::new(&group1.sk[0], None, msg1, &[]);
+        let forward_header1 = ForwardMsgHeader::<C>::new(&group1.sk[0], None, msg1);
+
+        let msg2 = b"another message";
+        let publish_header2 = PublishMessageHeader::<C>::new(&group2.sk[0], None, msg2, &[]);
+        let forward_header2 = ForwardMsgHeader::<C>::new(&group2.sk[0], None, msg2);
+
+        group1.writer[0]
+            .publish_message(publish_header1, msg1)
+            .await
+            .unwrap();
+        group2.writer[0]
+            .publish_message(publish_header2, msg2)
+            .await
+            .unwrap();
+
+        for subscription in &mut group1.subscription {
+            let (header, msg) = subscription.next().await;
+            assert_eq!(header, forward_header1);
+            assert_eq!(msg, msg1);
+        }
+
+        for subscription in &mut group2.subscription {
+            let (header, msg) = subscription.next().await;
+            assert_eq!(header, forward_header2);
+            assert_eq!(msg, msg2);
         }
     }
 
