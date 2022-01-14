@@ -10,7 +10,7 @@ futures = "0.3"
 phantom-type = "0.3"
 thiserror = "1"
 
-tokio = { version = "1.15", features = ["net"], optional = true }
+tokio = { version = "1.15", features = ["net", "io-util"], optional = true }
 tokio-util = { version = "0.6", features = ["compat"], optional = true }
 tokio-rustls = { version = "0.23", optional = true }
 rustls = { version = "0.20", default-features = false, optional = true }

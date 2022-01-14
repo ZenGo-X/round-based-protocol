@@ -248,6 +248,8 @@ pub struct MismatchedSignature;
 mod tests {
     use std::iter;
 
+    use matches::assert_matches;
+
     use crate::crypto::default_suite::DefaultSuite;
     use crate::crypto::*;
 
@@ -366,6 +368,26 @@ mod tests {
             assert_eq!(header, forward_header2);
             assert_eq!(msg, msg2);
         }
+    }
+
+    #[tokio::test]
+    async fn db_checks_that_being_published_message_is_not_temped() {
+        db_checks_that_being_published_message_is_not_temped_generic::<DefaultSuite>().await
+    }
+
+    async fn db_checks_that_being_published_message_is_not_temped_generic<C: CryptoSuite>() {
+        let db = Db::<C>::empty();
+        let group = MockedParties::generate(&db, TEST_ROOM, 3).await;
+
+        let msg = b"message sent by party";
+        let publish_header = PublishMessageHeader::<C>::new(&group.sk[0], None, msg, &[]);
+
+        let temped_msg = b"MiTMed message ------";
+
+        let result = group.writer[0]
+            .publish_message(publish_header, temped_msg)
+            .await;
+        assert_matches!(result, Err(MismatchedSignature));
     }
 
     struct MockedParties<C: CryptoSuite> {
