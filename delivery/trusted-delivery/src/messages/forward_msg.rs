@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::crypto::{CryptoSuite, DigestExt, InvalidSignature, Serializable, SigningKey};
 use crate::generic_array_ext::Sum;
+use crate::messages::MessageDestination;
 
 use super::{DataMsgParser, FixedSizeMessage};
 
@@ -17,6 +18,7 @@ use super::{DataMsgParser, FixedSizeMessage};
 pub struct ForwardMsgHeader<C: CryptoSuite> {
     pub sender: C::VerificationKey,
     pub is_broadcast: bool,
+    pub sequence_number: Option<u16>,
     pub signature: C::Signature,
     pub data_len: u16,
 }
@@ -24,17 +26,29 @@ pub struct ForwardMsgHeader<C: CryptoSuite> {
 impl<C: CryptoSuite> ForwardMsgHeader<C> {
     pub fn new(
         sender_identity_key: &C::SigningKey,
-        recipient: Option<&C::VerificationKey>,
+        recipient: MessageDestination<C::VerificationKey>,
         msg: &[u8],
     ) -> Self {
         let signature = C::Digest::new()
-            .chain(&[u8::from(recipient.is_none())])
-            .chain(recipient.map(Serializable::to_bytes).unwrap_or_default())
+            .chain(&[u8::from(recipient.is_broadcast())])
+            .chain(
+                recipient
+                    .sequence_number()
+                    .map(u16::to_be_bytes)
+                    .unwrap_or_default(),
+            )
+            .chain(
+                recipient
+                    .recipient_identity()
+                    .map(C::VerificationKey::to_bytes)
+                    .unwrap_or_default(),
+            )
             .chain(msg)
             .sign_message(sender_identity_key);
         Self {
             sender: sender_identity_key.verification_key(),
-            is_broadcast: recipient.is_none(),
+            is_broadcast: recipient.is_broadcast(),
+            sequence_number: recipient.sequence_number(),
             signature,
             data_len: msg.len().try_into().unwrap(),
         }
@@ -47,6 +61,11 @@ impl<C: CryptoSuite> ForwardMsgHeader<C> {
     ) -> Result<(), InvalidSignature> {
         C::Digest::new()
             .chain(&[u8::from(self.is_broadcast)])
+            .chain(
+                self.sequence_number
+                    .map(u16::to_be_bytes)
+                    .unwrap_or_default(),
+            )
             .chain(if !self.is_broadcast {
                 recipient_identity.to_bytes()
             } else {
@@ -68,6 +87,7 @@ impl<C: CryptoSuite> FixedSizeMessage for ForwardMsgHeader<C> {
 
     fn parse(input: &GenericArray<u8, Self::Size>) -> Result<Self, Self::ParseError> {
         let identity_size = C::VerificationKeySize::to_usize();
+        let seq_num_size = 2;
         let signature_size = C::SignatureSize::to_usize();
 
         let sender = C::VerificationKey::from_bytes(&input[..identity_size])
@@ -77,16 +97,31 @@ impl<C: CryptoSuite> FixedSizeMessage for ForwardMsgHeader<C> {
             1 => true,
             x => return Err(InvalidForwardMsgHeader::InvalidIsBroadcast(x)),
         };
-        let signature =
-            C::Signature::from_bytes(&input[identity_size + 1..identity_size + 1 + signature_size])
-                .map_err(|_| InvalidForwardMsgHeader::InvalidSignature)?;
-        let data_len = <[u8; 2]>::try_from(&input[identity_size + 1 + signature_size..])
-            .expect("provided exactly 2 bytes");
+        let sequence_number = if is_broadcast {
+            if input[identity_size + 1..identity_size + 1 + seq_num_size] != [0u8; 2] {
+                return Err(InvalidForwardMsgHeader::NonZeroSequenceNumberForDirectMessage);
+            }
+            None
+        } else {
+            let seq_num: [u8; 2] = input[identity_size + 1..identity_size + 1 + seq_num_size]
+                .try_into()
+                .expect("exactly two bytes are given");
+            Some(u16::from_be_bytes(seq_num))
+        };
+        let signature = C::Signature::from_bytes(
+            &input[identity_size + 1 + seq_num_size
+                ..identity_size + 1 + seq_num_size + signature_size],
+        )
+        .map_err(|_| InvalidForwardMsgHeader::InvalidSignature)?;
+        let data_len =
+            <[u8; 2]>::try_from(&input[identity_size + 1 + seq_num_size + signature_size..])
+                .expect("provided exactly 2 bytes");
         let data_len = u16::from_be_bytes(data_len);
 
         Ok(Self {
             sender,
             is_broadcast,
+            sequence_number,
             signature,
             data_len,
         })
@@ -94,15 +129,23 @@ impl<C: CryptoSuite> FixedSizeMessage for ForwardMsgHeader<C> {
 
     fn to_bytes(&self) -> GenericArray<u8, Self::Size> {
         let identity_size = C::VerificationKeySize::to_usize();
+        let seq_num_size = 2;
         let signature_size = C::SignatureSize::to_usize();
 
         let mut msg = GenericArray::<u8, Self::Size>::default();
 
         msg[0..identity_size].copy_from_slice(&self.sender.to_bytes());
         msg[identity_size] = u8::from(self.is_broadcast);
-        msg[identity_size + 1..identity_size + 1 + signature_size]
+        msg[identity_size + 1..identity_size + 1 + seq_num_size].copy_from_slice(
+            &self
+                .sequence_number
+                .map(u16::to_be_bytes)
+                .unwrap_or_default(),
+        );
+        msg[identity_size + 1 + seq_num_size..identity_size + 1 + seq_num_size + signature_size]
             .copy_from_slice(&self.signature.to_bytes());
-        msg[identity_size + 1 + signature_size..].copy_from_slice(&self.data_len.to_be_bytes());
+        msg[identity_size + 1 + seq_num_size + signature_size..]
+            .copy_from_slice(&self.data_len.to_be_bytes());
 
         msg
     }
@@ -147,6 +190,8 @@ pub enum InvalidForwardMsgHeader {
     InvalidIsBroadcast(u8),
     #[error("invalid signature")]
     InvalidSignature,
+    #[error("p2p message has non zero sequence number")]
+    NonZeroSequenceNumberForDirectMessage,
 }
 
 #[derive(Debug, Error)]

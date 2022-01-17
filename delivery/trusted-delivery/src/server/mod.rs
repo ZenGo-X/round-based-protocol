@@ -8,7 +8,7 @@ use tokio::sync::{Notify, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::crypto::CryptoSuite;
 
-use crate::messages::{ForwardMsgHeader, PublishMessageHeader, RoomId};
+use crate::messages::{ForwardMsgHeader, MessageDestination, PublishMessageHeader, RoomId};
 
 pub struct Db<C: CryptoSuite> {
     rooms: RwLock<HashMap<RoomId, Arc<Room<C>>>>,
@@ -104,6 +104,7 @@ impl<C: CryptoSuite> Room<C> {
             history: RwLock::new(RoomHistory {
                 headers: vec![],
                 concated_messages: vec![],
+                sequence_numbers: HashMap::new(),
             }),
             history_changed: Notify::new(),
 
@@ -140,13 +141,14 @@ impl<C: CryptoSuite> Room<C> {
 struct RoomHistory<C: CryptoSuite> {
     headers: Vec<MessageHeader<C>>,
     concated_messages: Vec<u8>,
+    sequence_numbers: HashMap<C::VerificationKey, u16>,
 }
 
 struct MessageHeader<C: CryptoSuite> {
     offset: usize,
     len: u16,
     sender: C::VerificationKey,
-    recipient: Option<C::VerificationKey>,
+    recipient: MessageDestination<C::VerificationKey>,
     signature: C::Signature,
 }
 
@@ -164,7 +166,8 @@ impl<C: CryptoSuite> Subscription<C> {
             if let Some(header) = history.headers.get(self.next_message) {
                 self.next_message += 1;
 
-                if header.recipient.is_some() && header.recipient.as_ref() != Some(&self.subscriber)
+                if !header.recipient.is_broadcast()
+                    && header.recipient.recipient_identity() != Some(&self.subscriber)
                 {
                     continue;
                 }
@@ -177,7 +180,8 @@ impl<C: CryptoSuite> Subscription<C> {
 
                 let header = ForwardMsgHeader {
                     sender: header.sender.clone(),
-                    is_broadcast: header.recipient.is_none(),
+                    is_broadcast: header.recipient.is_broadcast(),
+                    sequence_number: header.recipient.sequence_number(),
                     signature: header.signature.clone(),
                     data_len: header.len,
                 };
@@ -208,13 +212,27 @@ impl<C: CryptoSuite> Writer<C> {
         &self,
         header: PublishMessageHeader<C>,
         msg: &[u8],
-    ) -> Result<(), MismatchedSignature> {
+    ) -> Result<(), MalformedMessage> {
         debug_assert_eq!(usize::from(header.message_body_len), msg.len());
         header
             .verify(&self.writer_identity, msg)
-            .or(Err(MismatchedSignature))?;
+            .or(Err(MalformedMessage::MismatchedSignature))?;
 
         let mut history = self.room.history.write().await;
+
+        if let Some(seq_num) = header.recipient.sequence_number() {
+            let expected = history
+                .sequence_numbers
+                .entry(self.writer_identity.clone())
+                .or_insert(0);
+            if seq_num != *expected {
+                return Err(MalformedMessage::MismatchedSequenceNumber {
+                    expected: *expected,
+                    actual: seq_num,
+                });
+            }
+            *expected += 1;
+        }
 
         let offset = history.concated_messages.len();
         history.concated_messages.resize(offset + msg.len(), 0);
@@ -241,8 +259,12 @@ impl<C: CryptoSuite> Drop for Writer<C> {
 }
 
 #[derive(Debug, Error)]
-#[error("message signature doesn't match its content")]
-pub struct MismatchedSignature;
+pub enum MalformedMessage {
+    #[error("message signature doesn't match its content")]
+    MismatchedSignature,
+    #[error("mismatched sequence number: expected={expected} actual={actual}")]
+    MismatchedSequenceNumber { expected: u16, actual: u16 },
+}
 
 #[cfg(test)]
 mod tests {
@@ -268,8 +290,17 @@ mod tests {
         let mut group = MockedParties::generate(&db, TEST_ROOM, 3).await;
 
         let msg = b"hello everyone, ready to generate some threshold keys?";
-        let publish_header = PublishMessageHeader::<C>::new(&group.sk[0], None, msg, &[]);
-        let forward_header = ForwardMsgHeader::new(&group.sk[0], None, msg);
+        let publish_header = PublishMessageHeader::<C>::new(
+            &group.sk[0],
+            MessageDestination::AllParties { sequence_number: 0 },
+            msg,
+            &[],
+        );
+        let forward_header = ForwardMsgHeader::new(
+            &group.sk[0],
+            MessageDestination::AllParties { sequence_number: 0 },
+            msg,
+        );
 
         group.writer[0]
             .publish_message(publish_header, msg.as_ref())
@@ -295,17 +326,32 @@ mod tests {
         let direct_message = b"this is a direct message that'll be received only by destination";
         let publish_header1 = PublishMessageHeader::<C>::new(
             &group.sk[0],
-            Some(group.pk[1].clone()),
+            MessageDestination::OneParty {
+                recipient_identity: group.pk[1].clone(),
+            },
             direct_message,
             &[],
         );
-        let forward_header1 =
-            ForwardMsgHeader::<C>::new(&group.sk[0], Some(&group.pk[1]), direct_message);
+        let forward_header1 = ForwardMsgHeader::<C>::new(
+            &group.sk[0],
+            MessageDestination::OneParty {
+                recipient_identity: group.pk[1].clone(),
+            },
+            direct_message,
+        );
 
         let public_message = b"this message is seen by everyone";
-        let publish_header2 =
-            PublishMessageHeader::<C>::new(&group.sk[2], None, public_message, &[]);
-        let forward_header2 = ForwardMsgHeader::<C>::new(&group.sk[2], None, public_message);
+        let publish_header2 = PublishMessageHeader::<C>::new(
+            &group.sk[2],
+            MessageDestination::AllParties { sequence_number: 0 },
+            public_message,
+            &[],
+        );
+        let forward_header2 = ForwardMsgHeader::<C>::new(
+            &group.sk[2],
+            MessageDestination::AllParties { sequence_number: 0 },
+            public_message,
+        );
 
         group.writer[0]
             .publish_message(publish_header1, direct_message)
@@ -341,12 +387,30 @@ mod tests {
         let mut group2 = MockedParties::generate(&db, ANOTHER_ROOM, 2).await;
 
         let msg1 = b"some message";
-        let publish_header1 = PublishMessageHeader::<C>::new(&group1.sk[0], None, msg1, &[]);
-        let forward_header1 = ForwardMsgHeader::<C>::new(&group1.sk[0], None, msg1);
+        let publish_header1 = PublishMessageHeader::<C>::new(
+            &group1.sk[0],
+            MessageDestination::AllParties { sequence_number: 0 },
+            msg1,
+            &[],
+        );
+        let forward_header1 = ForwardMsgHeader::<C>::new(
+            &group1.sk[0],
+            MessageDestination::AllParties { sequence_number: 0 },
+            msg1,
+        );
 
         let msg2 = b"another message";
-        let publish_header2 = PublishMessageHeader::<C>::new(&group2.sk[0], None, msg2, &[]);
-        let forward_header2 = ForwardMsgHeader::<C>::new(&group2.sk[0], None, msg2);
+        let publish_header2 = PublishMessageHeader::<C>::new(
+            &group2.sk[0],
+            MessageDestination::AllParties { sequence_number: 0 },
+            msg2,
+            &[],
+        );
+        let forward_header2 = ForwardMsgHeader::<C>::new(
+            &group2.sk[0],
+            MessageDestination::AllParties { sequence_number: 0 },
+            msg2,
+        );
 
         group1.writer[0]
             .publish_message(publish_header1, msg1)
@@ -380,14 +444,115 @@ mod tests {
         let group = MockedParties::generate(&db, TEST_ROOM, 3).await;
 
         let msg = b"message sent by party";
-        let publish_header = PublishMessageHeader::<C>::new(&group.sk[0], None, msg, &[]);
+        let publish_header = PublishMessageHeader::<C>::new(
+            &group.sk[0],
+            MessageDestination::AllParties { sequence_number: 0 },
+            msg,
+            &[],
+        );
 
         let temped_msg = b"MiTMed message ------";
 
         let result = group.writer[0]
             .publish_message(publish_header, temped_msg)
             .await;
-        assert_matches!(result, Err(MismatchedSignature));
+        assert_matches!(result, Err(MalformedMessage::MismatchedSignature));
+    }
+
+    #[tokio::test]
+    async fn db_checks_that_broadcast_messages_appear_in_expected_order() {
+        db_checks_that_broadcast_messages_appear_in_expected_order_generic::<DefaultSuite>().await
+    }
+
+    async fn db_checks_that_broadcast_messages_appear_in_expected_order_generic<C: CryptoSuite>() {
+        let db = Db::<C>::empty();
+        let mut group = MockedParties::generate(&db, TEST_ROOM, 3).await;
+
+        let msg0 = b"first broad message";
+        let headers0 = group.derive_broadcast_message_headers(0, 0, msg0);
+
+        let direct_msg = b"p2p message";
+        let direct_headers = group.derive_direct_message_headers(0, 2, direct_msg);
+
+        let msg1 = b"second broad message";
+        let headers1 = group.derive_broadcast_message_headers(0, 1, msg1);
+
+        let msg2 = b"third broad message";
+        let headers2 = group.derive_broadcast_message_headers(1, 0, msg2);
+
+        let msg3 = b"fourth broad message";
+        let headers3 = group.derive_broadcast_message_headers(0, 2, msg3);
+
+        let result = group.writer[0]
+            .publish_message(headers1.publish.clone(), msg1)
+            .await;
+        assert_matches!(
+            result,
+            Err(MalformedMessage::MismatchedSequenceNumber { expected, actual }) if expected == 0 && actual == 1
+        );
+
+        group.writer[0]
+            .publish_message(headers0.publish, msg0)
+            .await
+            .unwrap();
+        group.writer[0]
+            .publish_message(direct_headers.publish, direct_msg)
+            .await
+            .unwrap();
+
+        let result = group.writer[0]
+            .publish_message(headers3.publish.clone(), msg3)
+            .await;
+        assert_matches!(
+            result,
+            Err(MalformedMessage::MismatchedSequenceNumber { expected, actual }) if expected == 1 && actual == 2
+        );
+
+        group.writer[0]
+            .publish_message(headers1.publish.clone(), msg1)
+            .await
+            .unwrap();
+        group.writer[1]
+            .publish_message(headers2.publish, msg2)
+            .await
+            .unwrap();
+
+        let result = group.writer[0]
+            .publish_message(headers1.publish.clone(), msg1)
+            .await;
+        assert_matches!(
+            result,
+            Err(MalformedMessage::MismatchedSequenceNumber { expected, actual }) if expected == 2 && actual == 1
+        );
+
+        group.writer[0]
+            .publish_message(headers3.publish, msg3)
+            .await
+            .unwrap();
+
+        for (i, subscription) in group.subscription.iter_mut().enumerate() {
+            let (header, msg) = subscription.next().await;
+            assert_eq!(header, headers0.forward);
+            assert_eq!(msg, msg0);
+
+            if i == 2 {
+                let (header, msg) = subscription.next().await;
+                assert_eq!(header, direct_headers.forward);
+                assert_eq!(msg, direct_msg);
+            }
+
+            let (header, msg) = subscription.next().await;
+            assert_eq!(header, headers1.forward);
+            assert_eq!(msg, msg1);
+
+            let (header, msg) = subscription.next().await;
+            assert_eq!(header, headers2.forward);
+            assert_eq!(msg, msg2);
+
+            let (header, msg) = subscription.next().await;
+            assert_eq!(header, headers3.forward);
+            assert_eq!(msg, msg3);
+        }
     }
 
     struct MockedParties<C: CryptoSuite> {
@@ -429,5 +594,60 @@ mod tests {
                 writer,
             }
         }
+
+        pub fn derive_broadcast_message_headers(
+            &self,
+            sender: u16,
+            sequence_number: u16,
+            msg: &[u8],
+        ) -> DerivedHeaders<C> {
+            let publish_header = PublishMessageHeader::<C>::new(
+                &self.sk[usize::from(sender)],
+                MessageDestination::AllParties { sequence_number },
+                msg,
+                &[],
+            );
+            let forward_header = ForwardMsgHeader::<C>::new(
+                &self.sk[usize::from(sender)],
+                MessageDestination::AllParties { sequence_number },
+                msg,
+            );
+            DerivedHeaders {
+                publish: publish_header,
+                forward: forward_header,
+            }
+        }
+
+        pub fn derive_direct_message_headers(
+            &self,
+            sender: u16,
+            recipient: u16,
+            msg: &[u8],
+        ) -> DerivedHeaders<C> {
+            let publish_header = PublishMessageHeader::<C>::new(
+                &self.sk[usize::from(sender)],
+                MessageDestination::OneParty {
+                    recipient_identity: self.pk[usize::from(recipient)].clone(),
+                },
+                msg,
+                &[],
+            );
+            let forward_header = ForwardMsgHeader::<C>::new(
+                &self.sk[usize::from(sender)],
+                MessageDestination::OneParty {
+                    recipient_identity: self.pk[usize::from(recipient)].clone(),
+                },
+                msg,
+            );
+            DerivedHeaders {
+                publish: publish_header,
+                forward: forward_header,
+            }
+        }
+    }
+
+    pub struct DerivedHeaders<C: CryptoSuite> {
+        pub publish: PublishMessageHeader<C>,
+        pub forward: ForwardMsgHeader<C>,
     }
 }

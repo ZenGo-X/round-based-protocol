@@ -15,23 +15,64 @@ use super::{DataMsgParser, FixedSizeMessage};
 #[derive(Educe)]
 #[educe(Clone, PartialEq, Eq)]
 pub struct PublishMessageHeader<C: CryptoSuite> {
-    pub recipient: Option<C::VerificationKey>,
+    pub recipient: MessageDestination<C::VerificationKey>,
     pub signature: C::Signature,
     pub message_body_len: u16,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum MessageDestination<I> {
+    /// Direct (p2p) message
+    OneParty { recipient_identity: I },
+    /// Broadcast message
+    AllParties {
+        /// Sequent number of this broadcast message
+        sequence_number: u16,
+    },
+}
+
+impl<I> MessageDestination<I> {
+    pub fn is_broadcast(&self) -> bool {
+        matches!(self, MessageDestination::AllParties { .. })
+    }
+
+    /// Returns recipient identity if it's p2p message
+    pub fn recipient_identity(&self) -> Option<&I> {
+        match self {
+            MessageDestination::OneParty {
+                recipient_identity: party_identity,
+            } => Some(party_identity),
+            _ => None,
+        }
+    }
+
+    /// Returns message sequent number if it's broadcast message
+    pub fn sequence_number(&self) -> Option<u16> {
+        match self {
+            MessageDestination::AllParties { sequence_number } => Some(*sequence_number),
+            _ => None,
+        }
+    }
 }
 
 impl<C: CryptoSuite> PublishMessageHeader<C> {
     pub fn new(
         identity_key: &C::SigningKey,
-        recipient: Option<C::VerificationKey>,
+        recipient: MessageDestination<C::VerificationKey>,
         msg: &[u8],
         tag: &[u8],
     ) -> Self {
         let signature = C::Digest::new()
-            .chain(&[u8::from(recipient.is_none())])
+            .chain(&[u8::from(recipient.is_broadcast())])
             .chain(
                 recipient
-                    .as_ref()
+                    .sequence_number()
+                    .map(u16::to_be_bytes)
+                    .unwrap_or_default(),
+            )
+            .chain(
+                recipient
+                    .recipient_identity()
                     .map(C::VerificationKey::to_bytes)
                     .unwrap_or_default(),
             )
@@ -53,10 +94,16 @@ impl<C: CryptoSuite> PublishMessageHeader<C> {
         msg: &[u8],
     ) -> Result<(), InvalidSignature> {
         C::Digest::new()
-            .chain(&[u8::from(self.recipient.is_none())])
+            .chain(&[u8::from(self.recipient.is_broadcast())])
             .chain(
                 self.recipient
-                    .as_ref()
+                    .sequence_number()
+                    .map(u16::to_be_bytes)
+                    .unwrap_or_default(),
+            )
+            .chain(
+                self.recipient
+                    .recipient_identity()
                     .map(C::VerificationKey::to_bytes)
                     .unwrap_or_default(),
             )
@@ -85,16 +132,27 @@ impl<C: CryptoSuite> FixedSizeMessage for PublishMessageHeader<C> {
         };
 
         let recipient = if !is_broadcast {
-            Some(
-                C::VerificationKey::from_bytes(&input[1..1 + identity_size])
+            MessageDestination::OneParty {
+                recipient_identity: C::VerificationKey::from_bytes(&input[1..1 + identity_size])
                     .map_err(|_| InvalidPublishMsgHeader::InvalidRecipientIdentity)?,
-            )
+            }
         } else {
-            if input[1..1 + identity_size] != *GenericArray::<u8, C::VerificationKeySize>::default()
+            let seq_num_size = 2;
+            let seq_num: [u8; 2] = input[1..1 + seq_num_size]
+                .try_into()
+                .expect("exactly two bytes are given");
+            let seq_num = u16::from_be_bytes(seq_num);
+
+            // This sophisticated check ensures that `input[1 + seq_num_size..1 + identity_size]` are zeroes
+            if GenericArray::<u8, C::VerificationKeySize>::default()
+                .starts_with(&input[1 + seq_num_size..1 + identity_size])
             {
                 return Err(InvalidPublishMsgHeader::BroadcastHasDestination);
             }
-            None
+
+            MessageDestination::AllParties {
+                sequence_number: seq_num,
+            }
         };
 
         let signature =
@@ -114,13 +172,19 @@ impl<C: CryptoSuite> FixedSizeMessage for PublishMessageHeader<C> {
 
     fn to_bytes(&self) -> GenericArray<u8, Self::Size> {
         let identity_size = C::VerificationKeySize::to_usize();
+        let sequence_number_size = 2;
         let signature_size = C::SignatureSize::to_usize();
 
         let mut msg = GenericArray::<u8, Self::Size>::default();
 
-        msg[0] = self.recipient.is_some().into();
-        if let Some(recipient) = &self.recipient {
-            msg[1..1 + identity_size].copy_from_slice(&recipient.to_bytes());
+        msg[0] = self.recipient.is_broadcast().into();
+        match &self.recipient {
+            MessageDestination::OneParty { recipient_identity } => {
+                msg[1..1 + identity_size].copy_from_slice(&recipient_identity.to_bytes())
+            }
+            MessageDestination::AllParties { sequence_number } => {
+                msg[1..1 + sequence_number_size].copy_from_slice(&sequence_number.to_be_bytes())
+            }
         }
         msg[1 + identity_size..1 + identity_size + signature_size]
             .copy_from_slice(&self.signature.to_bytes());
@@ -130,16 +194,6 @@ impl<C: CryptoSuite> FixedSizeMessage for PublishMessageHeader<C> {
         msg
     }
 }
-
-// impl<C: CryptoSuite> Clone for PublishMessageHeader<C> {
-//     fn clone(&self) -> Self {
-//         Self {
-//             recipient: self.recipient.clone(),
-//             signature: self.signature.clone(),
-//             message_body_len: self.message_body_len,
-//         }
-//     }
-// }
 
 pub struct PublishMsg<C: CryptoSuite> {
     sender_identity: C::VerificationKey,
