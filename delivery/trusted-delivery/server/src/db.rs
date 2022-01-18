@@ -6,9 +6,10 @@ use thiserror::Error;
 
 use tokio::sync::{Notify, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::crypto::CryptoSuite;
-
-use crate::messages::{ForwardMsgHeader, MessageDestination, PublishMessageHeader, RoomId};
+use trusted_delivery_core::crypto::CryptoSuite;
+use trusted_delivery_core::messages::{
+    ForwardMsgHeader, MessageDestination, PublishMessageHeader, RoomId,
+};
 
 pub struct Db<C: CryptoSuite> {
     rooms: RwLock<HashMap<RoomId, Arc<Room<C>>>>,
@@ -213,7 +214,7 @@ impl<C: CryptoSuite> Writer<C> {
         header: PublishMessageHeader<C>,
         msg: &[u8],
     ) -> Result<(), MalformedMessage> {
-        debug_assert_eq!(usize::from(header.message_body_len), msg.len());
+        debug_assert_eq!(usize::from(header.data_len), msg.len());
         header
             .verify(&self.writer_identity, msg)
             .or(Err(MalformedMessage::MismatchedSignature))?;
@@ -240,7 +241,7 @@ impl<C: CryptoSuite> Writer<C> {
 
         history.headers.push(MessageHeader {
             offset,
-            len: header.message_body_len,
+            len: header.data_len,
             sender: self.writer_identity.clone(),
             recipient: header.recipient,
             signature: header.signature,
@@ -272,8 +273,8 @@ mod tests {
 
     use matches::assert_matches;
 
-    use crate::crypto::default_suite::DefaultSuite;
-    use crate::crypto::*;
+    use trusted_delivery_core::crypto::default_suite::DefaultSuite;
+    use trusted_delivery_core::crypto::*;
 
     use super::*;
 

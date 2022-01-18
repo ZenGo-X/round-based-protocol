@@ -17,7 +17,7 @@ use super::{DataMsgParser, FixedSizeMessage};
 pub struct PublishMessageHeader<C: CryptoSuite> {
     pub recipient: MessageDestination<C::VerificationKey>,
     pub signature: C::Signature,
-    pub message_body_len: u16,
+    pub data_len: u16,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -82,7 +82,7 @@ impl<C: CryptoSuite> PublishMessageHeader<C> {
         Self {
             recipient,
             signature,
-            message_body_len: (msg.len() + tag.len())
+            data_len: (msg.len() + tag.len())
                 .try_into()
                 .expect("message len overflows u16"),
         }
@@ -166,7 +166,7 @@ impl<C: CryptoSuite> FixedSizeMessage for PublishMessageHeader<C> {
         Ok(Self {
             recipient,
             signature,
-            message_body_len,
+            data_len: message_body_len,
         })
     }
 
@@ -188,8 +188,7 @@ impl<C: CryptoSuite> FixedSizeMessage for PublishMessageHeader<C> {
         }
         msg[1 + identity_size..1 + identity_size + signature_size]
             .copy_from_slice(&self.signature.to_bytes());
-        msg[1 + identity_size + signature_size..]
-            .copy_from_slice(&self.message_body_len.to_be_bytes());
+        msg[1 + identity_size + signature_size..].copy_from_slice(&self.data_len.to_be_bytes());
 
         msg
     }
@@ -210,7 +209,7 @@ impl<C: CryptoSuite> DataMsgParser for PublishMsg<C> {
     type ValidateError = InvalidPublishMsg;
 
     fn data_size(&self, header: &Self::Header) -> usize {
-        header.message_body_len.into()
+        header.data_len.into()
     }
 
     fn validate(&self, header: &Self::Header, data: &[u8]) -> Result<(), Self::ValidateError> {
