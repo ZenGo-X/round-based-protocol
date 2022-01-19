@@ -10,6 +10,7 @@ use thiserror::Error;
 
 #[cfg(feature = "default-crypto-suite")]
 pub mod default_suite;
+pub mod serde;
 
 pub trait CryptoSuite {
     type Digest: Digest<OutputSize = Self::DigestOutputSize>;
