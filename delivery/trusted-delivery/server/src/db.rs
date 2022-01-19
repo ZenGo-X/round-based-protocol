@@ -22,23 +22,29 @@ impl<C: CryptoSuite> Db<C> {
         }
     }
 
+    pub async fn get_room<'db>(
+        &'db self,
+        room_id: RoomId,
+    ) -> Option<LockedDb<'db, C, Arc<Room<C>>>> {
+        let rooms = self.rooms.read().await;
+
+        match rooms.get(&room_id) {
+            Some(room) if !room.is_abandoned() => Some(LockedDb {
+                inner: room.clone(),
+                _lock: DbLock::ReadLock(rooms),
+            }),
+            _ => None,
+        }
+    }
+
     pub async fn get_room_or_create_empty<'db>(
         &'db self,
         room_id: RoomId,
     ) -> LockedDb<'db, C, Arc<Room<C>>> {
-        let rooms = self.rooms.read().await;
-
-        match rooms.get(&room_id) {
-            Some(room) if !room.is_abandoned() => {
-                return LockedDb {
-                    inner: room.clone(),
-                    _lock: DbLock::ReadLock(rooms),
-                };
-            }
-            _ => (),
+        if let Some(room) = self.get_room(room_id).await {
+            return room;
         }
 
-        drop(rooms);
         let mut rooms = self.rooms.write().await;
 
         match rooms.entry(room_id) {
