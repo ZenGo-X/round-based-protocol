@@ -7,7 +7,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use trusted_delivery_core::crypto::{CryptoSuite, DigestExt};
+use crate::crypto::{CryptoSuite, DigestExt};
 
 #[derive(educe::Educe)]
 #[educe(Hash, Eq, PartialEq, Debug)]

@@ -1,7 +1,7 @@
 #![allow(dead_code)] // TODO: remove
 
 mod db;
-mod server;
+mod routes;
 
 fn main() {
     println!("Hello, world!");

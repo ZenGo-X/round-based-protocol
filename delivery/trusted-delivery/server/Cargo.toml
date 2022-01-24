@@ -9,8 +9,16 @@ edition = "2021"
 trusted-delivery-core = { path = "../core" }
 
 tokio = { version = "1", features = ["sync"] }
+rocket = { version = "0.5.0-rc.1", features = ["json", "secrets"] }
+
+generic-array = "0.14"
+hex = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+digest = "0.9"
 
 thiserror = "1"
+educe = "0.4"
 
 [dev-dependencies]
 matches = "0.1"
