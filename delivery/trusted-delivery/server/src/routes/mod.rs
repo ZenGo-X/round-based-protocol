@@ -2,6 +2,7 @@ use rocket::request::FromParam;
 
 mod auth;
 mod send;
+mod subscribe;
 
 pub struct RoomId([u8; 32]);
 

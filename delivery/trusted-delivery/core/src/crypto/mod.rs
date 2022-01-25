@@ -12,7 +12,7 @@ use thiserror::Error;
 pub mod default_suite;
 pub mod serde;
 
-pub trait CryptoSuite {
+pub trait CryptoSuite: 'static {
     type Digest: Digest<OutputSize = Self::DigestOutputSize>;
     type DigestOutputSize: ArrayLength<u8>;
 

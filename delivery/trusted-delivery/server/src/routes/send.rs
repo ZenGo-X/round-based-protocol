@@ -19,7 +19,7 @@ use crate::db::{Db, MalformedMessage};
 use crate::routes::auth::Authenticated;
 use crate::routes::verbose_error;
 
-#[rocket::post("/<room_id>/send", data = "<raw_message>")]
+#[rocket::post("/room/<room_id>/send", data = "<raw_message>")]
 pub async fn send(
     db: &State<Db<DefaultSuite>>,
     authenticated: Authenticated<DefaultSuite>,
@@ -65,6 +65,7 @@ async fn send_private<C: CryptoSuite, R: AsyncRead + Unpin>(
         .await
         .map_err(PublishMessagesError::ReadMessage)?;
 
+    // Push message to db
     let writer = db
         .get_room(room_id.0)
         .await
