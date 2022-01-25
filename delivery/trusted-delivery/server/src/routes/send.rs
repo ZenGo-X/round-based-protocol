@@ -91,12 +91,8 @@ enum PublishMessagesError {
     MalformedHeader(#[source] InvalidPublishMsgHeader),
     #[error("malformed message")]
     MalformedMessage(#[source] MalformedMessage),
-    #[error("unexpected eof")]
-    UnexpectedEof,
     #[error("read message")]
     ReadMessage(#[source] io::Error),
-    #[error("message doesn't match provided signature")]
-    MismatchedSignature,
 }
 
 impl PublishMessagesError {

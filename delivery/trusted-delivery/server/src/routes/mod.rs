@@ -1,8 +1,8 @@
 use rocket::request::FromParam;
 
-mod auth;
-mod send;
-mod subscribe;
+pub mod auth;
+pub mod send;
+pub mod subscribe;
 
 pub struct RoomId([u8; 32]);
 
