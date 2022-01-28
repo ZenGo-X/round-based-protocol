@@ -15,6 +15,10 @@ impl CryptoSuite for DefaultSuite {
     type Digest = sha2::Sha256;
     type DigestOutputSize = typenum::U32;
 
+    type Mac = hmac::Hmac<sha2::Sha256>;
+    type MacKeySize = typenum::U64;
+    type MacOutputSize = typenum::U32;
+
     type EncryptionScheme = aead::AeadEncryptionScheme<aes_gcm::Aes256Gcm>;
 
     type SigningScheme = elliptic::Secp256k1;

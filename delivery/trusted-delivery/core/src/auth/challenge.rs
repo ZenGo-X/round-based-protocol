@@ -4,10 +4,13 @@ use std::marker::PhantomData;
 use digest::Digest;
 use rand::rngs::OsRng;
 use rand::RngCore;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::crypto::{CryptoSuite, DigestExt};
+
+const CHALLENGE_PREFIX: &[u8] = b"AUTH-CHALLENGE-RESPONSE";
 
 #[derive(educe::Educe)]
 #[educe(Hash, Eq, PartialEq, Debug)]
@@ -32,7 +35,7 @@ impl<C: CryptoSuite> Challenge<C> {
         response: &C::Signature,
     ) -> Result<(), InvalidResponse> {
         C::Digest::new()
-            .chain("AUTH-CHALLENGE-RESPONSE")
+            .chain(CHALLENGE_PREFIX)
             .chain(self.challenge)
             .verify_signature(public_key, response)
             .or(Err(InvalidResponse))
@@ -64,5 +67,12 @@ pub struct SerializableChallenge {
 impl SerializableChallenge {
     pub fn as_bytes(&self) -> &[u8] {
         &self.challenge
+    }
+
+    pub fn sign_with<C: CryptoSuite>(&self, secret_key: &C::SigningKey) -> C::Signature {
+        C::Digest::new()
+            .chain(CHALLENGE_PREFIX)
+            .chain(self.challenge)
+            .sign_message(secret_key)
     }
 }

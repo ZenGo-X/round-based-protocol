@@ -1,19 +1,20 @@
 use std::collections::HashSet;
 
 use generic_array::GenericArray;
+use hex::FromHex;
 use rocket::http::{Cookie, CookieJar, Status};
-use rocket::serde::json::Json;
-
 use rocket::request::{self, FromRequest};
+use rocket::serde::json::Json;
 use rocket::{Request, State};
+use thiserror::Error;
 use tokio::sync::Mutex;
 
-use trusted_delivery_core::challenge::{Challenge, SerializableChallenge};
+use trusted_delivery_core::auth::{
+    AuthReq, AuthResp, Challenge, InvalidResponse, SerializableChallenge, ServerKey, Witness,
+    WitnessNotValid, WITNESS_HEADER_NAME,
+};
 use trusted_delivery_core::crypto::default_suite::DefaultSuite;
 use trusted_delivery_core::crypto::{CryptoSuite, Serializable};
-use trusted_delivery_core::messages::{AuthError, AuthReq};
-
-const AUTH_COOKIE: &str = "auth";
 
 pub struct Challenges<C: CryptoSuite>(Mutex<HashSet<Challenge<C>>>);
 
@@ -54,33 +55,38 @@ async fn get_challenge_private<C: CryptoSuite>(
 
 #[rocket::post("/auth", data = "<auth_req>")]
 pub async fn auth(
-    cookies: &CookieJar<'_>,
+    server_key: &State<ServerKey<DefaultSuite>>,
     challenges: &State<Challenges<DefaultSuite>>,
     auth_req: Json<AuthReq<DefaultSuite>>,
-) -> Json<Result<(), AuthError>> {
-    if let Err(e) = auth_private(&challenges, &auth_req.0).await {
-        return Json(Err(e));
+) -> (Status, Json<Result<AuthResp<DefaultSuite>, String>>) {
+    match auth_private(&server_key, &challenges, &auth_req).await {
+        Ok(witness) => (Status::Ok, Json(Ok(AuthResp { witness }))),
+        Err(err) => (Status::BadRequest, Json(Err(err.to_string()))),
     }
-    cookies.add_private(Cookie::new(
-        AUTH_COOKIE,
-        hex::encode(auth_req.public_key.to_bytes()),
-    ));
-    Json(Ok(()))
 }
 
 async fn auth_private<C: CryptoSuite>(
+    server_key: &ServerKey<C>,
     challenges: &Challenges<C>,
     auth_req: &AuthReq<C>,
-) -> Result<(), AuthError> {
+) -> Result<Witness<C>, AuthError> {
     let challenge = {
         let mut challenges = challenges.0.lock().await;
         challenges
             .take(auth_req.challenge.as_bytes())
             .ok_or(AuthError::UnknownChallenge)?
     };
-    challenge
-        .validate_response(&auth_req.public_key, &auth_req.response)
+    server_key
+        .attest(&auth_req.public_key, challenge, &auth_req.response)
         .or(Err(AuthError::ChallengeResponseNotValid))
+}
+
+#[derive(Debug, Error)]
+enum AuthError {
+    #[error("unknown challenge")]
+    UnknownChallenge,
+    #[error("challenge response is not valid")]
+    ChallengeResponseNotValid,
 }
 
 pub struct Authenticated<C: CryptoSuite> {
@@ -95,22 +101,29 @@ impl<'r, C: CryptoSuite> FromRequest<'r> for Authenticated<C> {
     type Error = NotAuthenticated;
 
     async fn from_request(req: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
-        let cookies = req.cookies();
-        let public_key_hex = match cookies.get_private(AUTH_COOKIE) {
-            Some(pk) => pk,
+        let witness = match req.headers().get_one(WITNESS_HEADER_NAME) {
+            Some(witness) => witness,
             None => return request::Outcome::Failure((Status::Forbidden, NotAuthenticated)),
         };
-
-        let mut public_key_bytes = GenericArray::<u8, C::VerificationKeySize>::default();
-        if hex::decode_to_slice(public_key_hex.value(), &mut public_key_bytes).is_err() {
-            return request::Outcome::Failure((Status::Forbidden, NotAuthenticated));
-        }
-
-        let public_key = match C::VerificationKey::from_bytes(&public_key_bytes) {
-            Ok(pk) => pk,
-            Err(_) => return request::Outcome::Failure((Status::Forbidden, NotAuthenticated)),
+        let witness = match Witness::<C>::from_hex(witness) {
+            Ok(witness) => witness,
+            Err(_not_hex) => {
+                return request::Outcome::Failure((Status::Forbidden, NotAuthenticated))
+            }
         };
 
-        request::Outcome::Success(Self { public_key })
+        let server_key = match req.guard::<&State<ServerKey<C>>>().await {
+            request::Outcome::Success(key) => key,
+            _ => panic!("server key not found"),
+        };
+
+        let public_key = match server_key.verify(&witness) {
+            Ok(public_key) => public_key,
+            Err(_witness_not_valid) => {
+                return request::Outcome::Failure((Status::Forbidden, NotAuthenticated))
+            }
+        };
+
+        request::Outcome::Success(Authenticated { public_key })
     }
 }

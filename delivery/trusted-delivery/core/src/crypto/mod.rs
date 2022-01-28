@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 
+use crypto_mac::{Mac, NewMac};
 use digest::Digest;
 use generic_array::{ArrayLength, GenericArray};
 use never::Never;
@@ -15,6 +16,10 @@ pub mod serde;
 pub trait CryptoSuite: 'static {
     type Digest: Digest<OutputSize = Self::DigestOutputSize>;
     type DigestOutputSize: ArrayLength<u8>;
+
+    type Mac: Mac<OutputSize = Self::MacOutputSize> + NewMac<KeySize = Self::MacKeySize>;
+    type MacKeySize: ArrayLength<u8>;
+    type MacOutputSize: ArrayLength<u8>;
 
     type EncryptionScheme: EncryptionScheme<
         EncryptionKey = Self::EncryptionKey,
@@ -46,7 +51,8 @@ pub trait CryptoSuite: 'static {
             VerificationKey = Self::VerificationKey,
             Signature = Self::Signature,
             HashedMessageSize = Self::DigestOutputSize,
-        > + Send
+        > + Clone
+        + Send
         + Sync
         + Unpin
         + 'static;

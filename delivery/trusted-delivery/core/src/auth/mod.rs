@@ -1,7 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use crate::challenge::SerializableChallenge;
+pub use self::{challenge::*, server_key::*};
 use crate::crypto::{self, CryptoSuite};
+
+mod challenge;
+mod server_key;
+
+pub const WITNESS_HEADER_NAME: &str = "Auth-Witness";
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -14,7 +19,7 @@ pub struct AuthReq<C: CryptoSuite> {
 }
 
 #[derive(Serialize, Deserialize)]
-pub enum AuthError {
-    ChallengeResponseNotValid,
-    UnknownChallenge,
+pub struct AuthResp<C: CryptoSuite> {
+    #[serde(with = "hex::serde")]
+    pub witness: Witness<C>,
 }

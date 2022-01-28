@@ -6,7 +6,7 @@ use tokio::io::AsyncRead;
 
 use trusted_delivery_core::crypto::default_suite::DefaultSuite;
 use trusted_delivery_core::crypto::CryptoSuite;
-use trusted_delivery_core::messages::FixedSizeMessage;
+use trusted_delivery_core::publish_msg::Header;
 
 use crate::db::Db;
 use crate::routes::auth::Authenticated;
@@ -34,13 +34,15 @@ async fn subscribe_private<C: CryptoSuite>(
         .unlock_db();
 
     ReaderStream! {
-        let (header, data) = subscription.next().await;
-        let header = header.to_bytes();
+        loop {
+            let (header, data) = subscription.next().await;
+            let header = header.to_bytes();
 
-        let mut msg = vec![0u8; header.len() + data.len()];
-        msg[..header.len()].copy_from_slice(&header);
-        msg[header.len()..].copy_from_slice(data);
+            let mut msg = vec![0u8; header.len() + data.len()];
+            msg[..header.len()].copy_from_slice(&header);
+            msg[header.len()..].copy_from_slice(data);
 
-        yield Cursor::new(msg)
+            yield Cursor::new(msg)
+        }
     }
 }

@@ -9,7 +9,7 @@ edition = "2021"
 trusted-delivery-core = { path = "../core" }
 
 tokio = { version = "1", features = ["sync"] }
-rocket = { version = "0.5.0-rc.1", features = ["json", "secrets", "tls"] }
+rocket = { version = "0.5.0-rc.1", features = ["json", "tls"] }
 
 generic-array = "0.14"
 hex = { version = "0.4", features = ["serde"] }

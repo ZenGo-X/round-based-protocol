@@ -10,9 +10,7 @@ use generic_array::GenericArray;
 
 use trusted_delivery_core::crypto::default_suite::DefaultSuite;
 use trusted_delivery_core::crypto::CryptoSuite;
-use trusted_delivery_core::messages::{
-    FixedSizeMessage, InvalidPublishMsgHeader, PublishMessageHeader,
-};
+use trusted_delivery_core::publish_msg::{Header, InvalidPublishMsgHeader, PublishMessageHeader};
 
 use super::RoomId;
 use crate::db::{Db, MalformedMessage};
@@ -47,8 +45,7 @@ async fn send_private<C: CryptoSuite, R: AsyncRead + Unpin>(
     mut raw_message: R,
 ) -> Result<(), PublishMessagesError> {
     // Receive message header
-    let mut header_raw =
-        GenericArray::<u8, <PublishMessageHeader<C> as FixedSizeMessage>::Size>::default();
+    let mut header_raw = GenericArray::<u8, <PublishMessageHeader<C> as Header>::Size>::default();
     raw_message
         .read_exact(&mut header_raw)
         .await

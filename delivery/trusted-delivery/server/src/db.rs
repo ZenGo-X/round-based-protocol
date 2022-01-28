@@ -7,9 +7,10 @@ use thiserror::Error;
 use tokio::sync::{Notify, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use trusted_delivery_core::crypto::CryptoSuite;
-use trusted_delivery_core::messages::{
-    ForwardMsgHeader, MessageDestination, PublishMessageHeader, RoomId,
+use trusted_delivery_core::publish_msg::{
+    ForwardMessageHeader, Header, MessageDestination, PublishMessageHeader,
 };
+use trusted_delivery_core::RoomId;
 
 pub struct Db<C: CryptoSuite> {
     rooms: RwLock<HashMap<RoomId, Arc<Room<C>>>>,
@@ -167,7 +168,7 @@ pub struct Subscription<C: CryptoSuite> {
 }
 
 impl<C: CryptoSuite> Subscription<C> {
-    pub async fn next(&mut self) -> (ForwardMsgHeader<C>, &[u8]) {
+    pub async fn next(&mut self) -> (ForwardMessageHeader<C>, &[u8]) {
         loop {
             let history = self.room.history.read().await;
             if let Some(header) = history.headers.get(self.next_message) {
@@ -185,7 +186,7 @@ impl<C: CryptoSuite> Subscription<C> {
                         [header.offset..header.offset + usize::from(header.len)],
                 );
 
-                let header = ForwardMsgHeader {
+                let header = ForwardMessageHeader {
                     sender: header.sender.clone(),
                     is_broadcast: header.recipient.is_broadcast(),
                     sequence_number: header.recipient.sequence_number(),
@@ -301,9 +302,8 @@ mod tests {
             &group.sk[0],
             MessageDestination::AllParties { sequence_number: 0 },
             msg,
-            &[],
         );
-        let forward_header = ForwardMsgHeader::new(
+        let forward_header = ForwardMessageHeader::new(
             &group.sk[0],
             MessageDestination::AllParties { sequence_number: 0 },
             msg,
@@ -337,9 +337,8 @@ mod tests {
                 recipient_identity: group.pk[1].clone(),
             },
             direct_message,
-            &[],
         );
-        let forward_header1 = ForwardMsgHeader::<C>::new(
+        let forward_header1 = ForwardMessageHeader::<C>::new(
             &group.sk[0],
             MessageDestination::OneParty {
                 recipient_identity: group.pk[1].clone(),
@@ -352,9 +351,8 @@ mod tests {
             &group.sk[2],
             MessageDestination::AllParties { sequence_number: 0 },
             public_message,
-            &[],
         );
-        let forward_header2 = ForwardMsgHeader::<C>::new(
+        let forward_header2 = ForwardMessageHeader::<C>::new(
             &group.sk[2],
             MessageDestination::AllParties { sequence_number: 0 },
             public_message,
@@ -398,9 +396,8 @@ mod tests {
             &group1.sk[0],
             MessageDestination::AllParties { sequence_number: 0 },
             msg1,
-            &[],
         );
-        let forward_header1 = ForwardMsgHeader::<C>::new(
+        let forward_header1 = ForwardMessageHeader::<C>::new(
             &group1.sk[0],
             MessageDestination::AllParties { sequence_number: 0 },
             msg1,
@@ -411,9 +408,8 @@ mod tests {
             &group2.sk[0],
             MessageDestination::AllParties { sequence_number: 0 },
             msg2,
-            &[],
         );
-        let forward_header2 = ForwardMsgHeader::<C>::new(
+        let forward_header2 = ForwardMessageHeader::<C>::new(
             &group2.sk[0],
             MessageDestination::AllParties { sequence_number: 0 },
             msg2,
@@ -455,7 +451,6 @@ mod tests {
             &group.sk[0],
             MessageDestination::AllParties { sequence_number: 0 },
             msg,
-            &[],
         );
 
         let temped_msg = b"MiTMed message ------";
@@ -612,9 +607,8 @@ mod tests {
                 &self.sk[usize::from(sender)],
                 MessageDestination::AllParties { sequence_number },
                 msg,
-                &[],
             );
-            let forward_header = ForwardMsgHeader::<C>::new(
+            let forward_header = ForwardMessageHeader::<C>::new(
                 &self.sk[usize::from(sender)],
                 MessageDestination::AllParties { sequence_number },
                 msg,
@@ -637,9 +631,8 @@ mod tests {
                     recipient_identity: self.pk[usize::from(recipient)].clone(),
                 },
                 msg,
-                &[],
             );
-            let forward_header = ForwardMsgHeader::<C>::new(
+            let forward_header = ForwardMessageHeader::<C>::new(
                 &self.sk[usize::from(sender)],
                 MessageDestination::OneParty {
                     recipient_identity: self.pk[usize::from(recipient)].clone(),
@@ -655,6 +648,6 @@ mod tests {
 
     pub struct DerivedHeaders<C: CryptoSuite> {
         pub publish: PublishMessageHeader<C>,
-        pub forward: ForwardMsgHeader<C>,
+        pub forward: ForwardMessageHeader<C>,
     }
 }
