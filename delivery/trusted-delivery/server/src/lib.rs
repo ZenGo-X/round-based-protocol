@@ -1,4 +1,5 @@
 use rocket::{routes, Build, Rocket};
+use trusted_delivery_core::auth::ServerKey;
 
 use trusted_delivery_core::crypto::default_suite::DefaultSuite;
 
@@ -21,4 +22,5 @@ pub fn rocket() -> Rocket<Build> {
         )
         .manage(Db::<DefaultSuite>::empty())
         .manage(Challenges::<DefaultSuite>::new())
+        .manage(ServerKey::<DefaultSuite>::generate())
 }

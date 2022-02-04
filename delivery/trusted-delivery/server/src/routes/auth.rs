@@ -1,8 +1,7 @@
 use std::collections::HashSet;
 
-use generic_array::GenericArray;
 use hex::FromHex;
-use rocket::http::{Cookie, CookieJar, Status};
+use rocket::http::Status;
 use rocket::request::{self, FromRequest};
 use rocket::serde::json::Json;
 use rocket::{Request, State};
@@ -10,11 +9,10 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use trusted_delivery_core::auth::{
-    AuthReq, AuthResp, Challenge, InvalidResponse, SerializableChallenge, ServerKey, Witness,
-    WitnessNotValid, WITNESS_HEADER_NAME,
+    AuthReq, AuthResp, Challenge, SerializableChallenge, ServerKey, Witness, WITNESS_HEADER_NAME,
 };
 use trusted_delivery_core::crypto::default_suite::DefaultSuite;
-use trusted_delivery_core::crypto::{CryptoSuite, Serializable};
+use trusted_delivery_core::crypto::CryptoSuite;
 
 pub struct Challenges<C: CryptoSuite>(Mutex<HashSet<Challenge<C>>>);
 

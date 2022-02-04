@@ -1,3 +1,4 @@
+use educe::Educe;
 use serde::{Deserialize, Serialize};
 
 pub use self::{challenge::*, server_key::*};
@@ -18,7 +19,8 @@ pub struct AuthReq<C: CryptoSuite> {
     pub response: C::Signature,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Educe)]
+#[educe(Debug)]
 pub struct AuthResp<C: CryptoSuite> {
     #[serde(with = "hex::serde")]
     pub witness: Witness<C>,

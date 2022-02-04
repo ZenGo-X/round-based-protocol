@@ -6,7 +6,6 @@ use reqwest::{Client as HttpClient, StatusCode, Url};
 use educe::Educe;
 use thiserror::Error;
 
-use digest::Digest;
 use generic_array::typenum::Unsigned;
 use generic_array::GenericArray;
 use trusted_delivery_core::auth::{
@@ -176,10 +175,7 @@ impl<C: CryptoSuite> ApiClient<JoinedRoom<C>> {
         Ok(())
     }
 
-    pub async fn subscribe(
-        &self,
-        subscriber_public_key: C::VerificationKey,
-    ) -> Result<Subscription<C>> {
+    pub async fn subscribe(&self) -> Result<Subscription<C>> {
         let response = self
             .http_client
             .get(self.url(Method::Subscribe {
@@ -205,7 +201,7 @@ impl<C: CryptoSuite> ApiClient<JoinedRoom<C>> {
             message_received_and_parsed: false,
             parsed_header: None,
             buffer: vec![],
-            local_party_identity: subscriber_public_key,
+            local_party_identity: self.stage.auth.signing_key.verification_key(),
         })
     }
 }

@@ -218,16 +218,6 @@ impl<C: CryptoSuite> Header for PublishMessageHeader<C> {
     }
 }
 
-pub struct PublishMsg<C: CryptoSuite> {
-    sender_identity: C::VerificationKey,
-}
-
-impl<C: CryptoSuite> PublishMsg<C> {
-    pub fn new(sender_identity: C::VerificationKey) -> Self {
-        Self { sender_identity }
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum InvalidPublishMsgHeader {
     #[error("is_broadcast flag has incorrect value: {0} (expected 0 or 1)")]
@@ -306,7 +296,7 @@ impl<C: CryptoSuite> Header for ForwardMessageHeader<C> {
             1 => true,
             x => return Err(InvalidForwardMsgHeader::InvalidIsBroadcast(x)),
         };
-        let sequence_number = if is_broadcast {
+        let sequence_number = if !is_broadcast {
             if input[identity_size + 1..identity_size + 1 + seq_num_size] != [0u8; 2] {
                 return Err(InvalidForwardMsgHeader::NonZeroSequenceNumberForDirectMessage);
             }
@@ -385,40 +375,9 @@ impl<C: CryptoSuite> Header for ForwardMessageHeader<C> {
                 GenericArray::default()
             })
             .chain(data)
-            .verify_signature(recipient_identity, &self.signature)
+            .verify_signature(&self.sender, &self.signature)
     }
 }
-
-pub struct ForwardMsg<C: CryptoSuite> {
-    recipient_identity: C::VerificationKey,
-}
-
-impl<C: CryptoSuite> ForwardMsg<C> {
-    pub fn new(recipient_identity: C::VerificationKey) -> Self {
-        Self { recipient_identity }
-    }
-}
-
-// impl<C: CryptoSuite> DataMsgParser for ForwardMsg<C> {
-//     type Header = ForwardMsgHeader<C>;
-//     type ValidateError = InvalidForwardMsg;
-//
-//     fn data_size(&self, header: &Self::Header) -> usize {
-//         header.data_len.into()
-//     }
-//
-//     fn validate(&self, header: &Self::Header, data: &[u8]) -> Result<(), Self::ValidateError> {
-//         if data.len() != self.data_size(header) {
-//             return Err(InvalidForwardMsg::MismatchedLength {
-//                 expected_len: self.data_size(header),
-//                 actual_len: data.len(),
-//             });
-//         }
-//         header
-//             .verify(&self.recipient_identity, data)
-//             .map_err(|_| InvalidForwardMsg::InvalidSignature)
-//     }
-// }
 
 #[derive(Debug, Error)]
 pub enum InvalidForwardMsgHeader {

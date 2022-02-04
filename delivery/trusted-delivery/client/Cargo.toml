@@ -21,3 +21,6 @@ generic-array = "0.14"
 delivery-core = { path = "../../core" }
 trusted-delivery-core = { path = "../core", features = ["default-crypto-suite"] }
 
+[dev-dependencies]
+trusted-delivery-server = { path = "../server" }
+rocket = "0.5.0-rc.1"

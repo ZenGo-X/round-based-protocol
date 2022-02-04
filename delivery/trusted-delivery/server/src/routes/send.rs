@@ -3,6 +3,7 @@ use std::io;
 use rocket::data::{Data, ToByteUnit};
 use rocket::http::{ContentType, Status};
 use rocket::response::{Responder, Response};
+use rocket::serde::json::Json;
 use rocket::{Request, State};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -23,10 +24,10 @@ pub async fn send(
     authenticated: Authenticated<DefaultSuite>,
     room_id: RoomId,
     raw_message: Data<'_>,
-) -> (Status, Result<(), String>) {
+) -> (Status, Json<Result<(), String>>) {
     let raw_message = raw_message.open(10_000.kilobytes());
     let err = match send_private(&db, &authenticated, room_id, raw_message).await {
-        Ok(()) => return (Status::Ok, Ok(())),
+        Ok(()) => return (Status::Ok, Json(Ok(()))),
         Err(err) => err,
     };
 
@@ -35,7 +36,7 @@ pub async fn send(
         _ => Status::BadRequest,
     };
     let description = verbose_error(&err);
-    (code, Err(description))
+    (code, Json(Err(description)))
 }
 
 async fn send_private<C: CryptoSuite, R: AsyncRead + Unpin>(

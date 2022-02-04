@@ -1,11 +1,13 @@
 use trusted_delivery_core::crypto::CryptoSuite;
 use trusted_delivery_core::RoomId;
 
-use crate::client::Authenticated;
-use crate::sorted_list::SizeU16;
 use thiserror::Error;
 
-pub use self::client::{ApiClient, Error as ApiError};
+use crate::sorted_list::SizeU16;
+
+pub use self::client::{
+    ApiClient, Authenticated, Error as ApiError, JoinedRoom, NotAuthenticated, Subscription,
+};
 pub use self::sorted_list::SortedList;
 
 mod client;
