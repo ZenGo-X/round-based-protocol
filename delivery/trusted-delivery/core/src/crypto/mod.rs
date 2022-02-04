@@ -94,7 +94,7 @@ pub trait KeyExchangeScheme {
     type SecretKey;
 
     fn generate() -> (Self::PublicKey, Self::SecretKey);
-    fn kdf<K: Kdf>(local: &Self::SecretKey, remote: &Self::PublicKey) -> Result<K, KdfError>;
+    fn kdf<K: Kdf>(local: Self::SecretKey, remote: &Self::PublicKey) -> Result<K, KdfError>;
 }
 
 #[derive(Debug, Error)]
