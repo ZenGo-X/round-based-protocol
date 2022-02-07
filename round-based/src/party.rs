@@ -16,7 +16,7 @@ pub trait Mpc: internal::Sealed {
     type SpawnBlocking: SpawnBlocking;
 
     type SendError: Error;
-    type ReceiveError: Error + Send + Unpin + 'static;
+    type ReceiveError: Error + Send + Sync + Unpin + 'static;
 
     fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::SpawnBlocking>;
 }
@@ -77,7 +77,7 @@ where
     M: ProtocolMessage + Send + 'static,
     D: Delivery<M>,
     D::SendError: Error,
-    D::ReceiveError: Error + Send + Unpin + 'static,
+    D::ReceiveError: Error + Send + Sync + Unpin + 'static,
     B: SpawnBlocking,
 {
     type ProtocolMessage = M;

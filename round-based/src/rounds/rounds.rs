@@ -20,16 +20,18 @@ where
     S: TryStream<Ok = Incoming<M>>,
 {
     incomings: S,
-    rounds:
-        HashMap<u16, Option<Box<dyn ProcessRoundMessage<Msg = M, ReceiveError = Arc<S::Error>>>>>,
+    rounds: HashMap<
+        u16,
+        Option<Box<dyn ProcessRoundMessage<Msg = M, ReceiveError = Arc<S::Error>> + Send>>,
+    >,
     not_completed_rounds: u16,
 }
 
 impl<M, S> Rounds<M, S>
 where
-    S: TryStream<Ok = Incoming<M>> + Unpin,
-    S::Error: Display + 'static,
-    M: ProtocolMessage,
+    S: TryStream<Ok = Incoming<M>> + Send + Unpin + 'static,
+    S::Error: Display + Send + Sync + 'static,
+    M: ProtocolMessage + 'static,
 {
     pub fn listen(incomings: S) -> Self {
         Self {
@@ -39,12 +41,11 @@ where
         }
     }
 
-    pub fn add_round<R>(
-        &mut self,
-        message_store: R,
-    ) -> Round<R::Output, ReceiveMessageError<R::Error, S::Error>>
+    pub fn add_round<R>(&mut self, message_store: R) -> Round<R::Output, R::Error, S::Error>
     where
-        R: MessagesStore,
+        R: MessagesStore + Send,
+        R::Output: Send,
+        R::Error: Send,
         M: RoundMessage<R::Msg> + 'static,
     {
         let (tx, rx) = oneshot::channel();
@@ -60,7 +61,14 @@ where
             panic!("round {} is overridden", M::ROUND);
         }
         self.not_completed_rounds = self.not_completed_rounds.checked_add(1).unwrap();
-        Round { channel: Some(rx) }
+        Round { channel: rx }
+    }
+
+    /// Starts listening to incoming messages in the background
+    ///
+    /// Returns a handle that will abort background task on drop
+    pub fn start_in_background(self) -> RoundsHandle {
+        RoundsHandle(tokio::spawn(self.start()))
     }
 
     pub async fn start(mut self) {
@@ -174,28 +182,38 @@ where
     }
 }
 
-pub struct Round<R, E> {
-    channel: Option<oneshot::Receiver<Result<R, E>>>,
+/// Handle to [`Rounds`] working in background
+///
+/// Background task will be automatically canceled when handle is dropped
+pub struct RoundsHandle(tokio::task::JoinHandle<()>);
+
+impl RoundsHandle {
+    /// Aborts `Rounds` task working in background.
+    ///
+    /// Equivalent of dropping the handle.
+    ///
+    /// If any rounds are happened to be not completed at the time of calling this method, they will
+    /// terminate with error [`ReceiveMessageError::Aborted`]
+    pub fn abort(self) {}
 }
 
-impl<R, E> Future for Round<R, E> {
-    type Output = Result<R, E>;
+impl Drop for RoundsHandle {
+    fn drop(&mut self) {
+        self.0.abort()
+    }
+}
+
+pub struct Round<R, StoreErr, IoErr> {
+    channel: oneshot::Receiver<Result<R, ReceiveMessageError<StoreErr, IoErr>>>,
+}
+
+impl<R, StoreErr, IoErr> Future for Round<R, StoreErr, IoErr> {
+    type Output = Result<R, ReceiveMessageError<StoreErr, IoErr>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let channel = match self.channel.as_mut() {
-            Some(channel) => channel,
-            None => {
-                // Receiver is gone, in this case the future is never resolved
-                return Poll::Pending;
-            }
-        };
-        match ready!(Pin::new(channel).poll(cx)) {
+        match ready!(Pin::new(&mut self.channel).poll(cx)) {
             Ok(result) => Poll::Ready(result),
-            Err(_sender_is_gone) => {
-                // For whatever reason oneshot::Sender is gone. In this case, future is never resolved
-                self.channel = None;
-                Poll::Pending
-            }
+            Err(_sender_is_gone) => Poll::Ready(Err(ReceiveMessageError::Aborted)),
         }
     }
 }
@@ -322,29 +340,15 @@ enum ProcessRoundMessageError {
 }
 
 #[derive(Debug, Error)]
-pub enum RoundError<E> {
+pub enum ReceiveMessageError<StoreErr, IoErr> {
     #[error("processing received message resulted into error")]
-    ReceivedInvalidMessage(#[source] E),
-    #[error("stream of incoming messages yielded error")]
-    BrokenStream,
-}
-
-#[derive(Debug, Error)]
-pub enum ProcessError<E> {
-    #[error("stream of incoming messages yielded error")]
-    BrokenStream(#[source] E),
-    #[error("unexpected eof, following rounds are not finished: {not_completed_rounds:?}")]
-    UnexpectedEof { not_completed_rounds: Vec<u16> },
-}
-
-#[derive(Debug, Error)]
-pub enum ReceiveMessageError<RE, SE> {
-    #[error("processing received message resulted into error")]
-    ProcessMessageError(#[source] RE),
+    ProcessMessageError(#[source] StoreErr),
     #[error("receiving next incoming message resulted into error")]
-    ReceiveMessageError(#[source] Arc<SE>),
+    ReceiveMessageError(#[source] Arc<IoErr>),
     #[error("unexpected eof")]
     UnexpectedEof,
+    #[error("task receiving messages was aborted")]
+    Aborted,
 }
 
 #[cfg(test)]

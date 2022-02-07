@@ -14,7 +14,7 @@ use crate::rounds::MessagesStore;
 /// ## Example
 /// ```rust
 /// # use round_based::rounds::MessagesStore;
-/// # use round_based::rounds::round_input::RoundInput;
+/// # use round_based::rounds::store::RoundInput;
 /// # use round_based::Incoming;
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let mut input = RoundInput::<&'static str>::new(1, 3);
