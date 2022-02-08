@@ -13,7 +13,8 @@ use tokio::sync::oneshot;
 use tracing::{event, span, Level};
 
 use crate::rounds::MessagesStore;
-use crate::{ProtocolMessage, RoundMessage};
+
+pub use delivery_core::round_store::*;
 
 pub struct Rounds<M, S>
 where

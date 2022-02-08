@@ -1,9 +1,9 @@
 use std::iter;
 
-use delivery_core::Incoming;
 use thiserror::Error;
 
-use crate::rounds::MessagesStore;
+use crate::round_store::MessagesStore;
+use crate::Incoming;
 
 /// Simple implementation of [MessagesStore] that waits for all parties to send a message
 ///
@@ -13,9 +13,8 @@ use crate::rounds::MessagesStore;
 ///
 /// ## Example
 /// ```rust
-/// # use round_based::rounds::MessagesStore;
-/// # use round_based::rounds::store::RoundInput;
-/// # use round_based::Incoming;
+/// # use delivery_core::round_store::{MessagesStore, RoundInput};
+/// # use delivery_core::Incoming;
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let mut input = RoundInput::<&'static str>::new(1, 3);
 /// input.add_message(Incoming{ sender: 0, msg: "first party message" })?;
@@ -140,7 +139,7 @@ enum Reason {
 mod tests {
     use matches::assert_matches;
 
-    use crate::rounds::MessagesStore;
+    use crate::round_store::MessagesStore;
     use crate::Incoming;
 
     use super::{Error, Reason, RoundInput};

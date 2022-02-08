@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 futures = "0.3"
 serde = "1"
+thiserror = "1"
 
 bincode = { version = "1.3", optional = true }
 serde_json = { version = "1", optional = true }
@@ -16,8 +17,12 @@ rustls = { version = "0.20", default-features = false, optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "io-util"] }
+rustls = { version = "0.20", default-features = false }
+rcgen = "0.8"
 tokio-rustls = "0.23"
 futures = "0.3"
+matches = "0.1"
+round-based-derive = { path = "../../round-based-derive" }
 
 [features]
 default = ["bincode"]

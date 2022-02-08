@@ -1,7 +1,6 @@
-mod rounds;
-pub mod store;
+mod store;
 
-pub use self::rounds::*;
+pub use self::store::*;
 
 use crate::Incoming;
 
@@ -21,7 +20,7 @@ use crate::Incoming;
 pub trait MessagesStore: Sized + 'static {
     /// Message type
     type Msg;
-    /// Store output (usually, `Vec<_>` of received messages)
+    /// Store output (i.e. `Vec<_>` of received messages)
     type Output;
     /// Store error
     type Error;
@@ -53,7 +52,7 @@ pub trait MessagesStore: Sized + 'static {
 /// # pub struct Msg1;
 /// # pub struct Msg2;
 /// #
-/// use round_based::ProtocolMessage;
+/// # use delivery_core::round_store::ProtocolMessage;
 ///
 /// pub enum Message {
 ///     Round1(Msg1),
@@ -77,9 +76,10 @@ pub trait MessagesStore: Sized + 'static {
 /// # pub struct Msg1;
 /// # pub struct Msg2;
 /// #
-/// use round_based::ProtocolMessage;
+/// # use round_based_derive::ProtocolMessage;
 ///
 /// #[derive(ProtocolMessage)]
+/// # #[protocol_message(root = delivery_core::round_store)]
 /// pub enum Message {
 ///     Round1(Msg1),
 ///     Round2(Msg2),
@@ -105,8 +105,8 @@ pub trait ProtocolMessage: Sized {
 /// Protocol message can be naturally represented as an enum:
 ///
 /// ```rust
-/// use round_based::{ProtocolMessage, RoundMessage};
-///
+/// # use delivery_core::round_store::{ProtocolMessage, RoundMessage};
+/// #
 /// pub enum Message {
 ///     Round1(Msg1),
 ///     Round2(Msg2),
@@ -153,9 +153,10 @@ pub trait ProtocolMessage: Sized {
 ///
 /// This implementation can be automatically derived (if you enabled `derive` feature):
 /// ```rust
-/// use round_based::ProtocolMessage;
+/// # use round_based_derive::ProtocolMessage;
 ///
 /// #[derive(ProtocolMessage)]
+/// # #[protocol_message(root = delivery_core::round_store)]
 /// pub enum Message {
 ///     Round1(Msg1),
 ///     Round2(Msg2),

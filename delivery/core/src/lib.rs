@@ -15,6 +15,7 @@ use std::error::Error;
 
 use futures::{Sink, Stream};
 
+pub mod round_store;
 pub mod serialization_backend;
 pub mod utils;
 
