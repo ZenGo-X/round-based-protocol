@@ -13,6 +13,13 @@ tokio-rustls = "0.23"
 rustls = "0.20"
 anyhow = "1"
 rand = "0.8"
+sha2 = "0.9"
+hex-literal = "0.3"
+hex = "*"
+futures = "0.3"
+rand_chacha = "0.3"
+matches = "0.1"
+thiserror = "1"
 
 round-based = { path = "../round-based", features = ["two-party-insecure", "mock-tls"] }
 random-generation-protocol = { path = "../examples/random-generation-protocol" }

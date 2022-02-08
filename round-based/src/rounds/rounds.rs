@@ -350,19 +350,3 @@ pub enum ReceiveMessageError<StoreErr, IoErr> {
     #[error("task receiving messages was aborted")]
     Aborted,
 }
-
-#[cfg(test)]
-mod test {
-    use crate::ProtocolMessage;
-
-    #[derive(Debug, ProtocolMessage)]
-    #[protocol_message(root = crate)]
-    enum Message {
-        Round1(Msg1),
-        Round2(Msg2),
-    }
-    #[derive(Debug)]
-    struct Msg1(u128);
-    #[derive(Debug)]
-    struct Msg2(u128);
-}
