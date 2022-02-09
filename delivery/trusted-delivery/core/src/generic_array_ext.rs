@@ -3,6 +3,7 @@ use phantom_type::PhantomType;
 use typenum::Unsigned;
 
 mod macros {
+    #[macro_export]
     macro_rules! Sum {
         ($single:ty $(,)?) => { $single };
         ($left:ty, $($right:ty),+ $(,)?) => {
@@ -13,10 +14,10 @@ mod macros {
         };
     }
 
-    pub(crate) use Sum;
+    pub use Sum;
 }
 
-pub(crate) use macros::Sum;
+pub use macros::Sum;
 
 #[derive(Copy, Clone, Default)]
 pub struct Sum<U1: Unsigned, U2: Unsigned> {

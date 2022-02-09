@@ -51,6 +51,10 @@ impl<T: Ord> SizeU16<SortedList<T>> {
             .ok()
             .map(|index| index.try_into().expect("guaranteed to fit into u16"))
     }
+
+    pub fn get(&self, i: u16) -> Option<&T> {
+        self.0.get(usize::from(i))
+    }
 }
 
 impl<V, T> Deref for SizeU16<V>
