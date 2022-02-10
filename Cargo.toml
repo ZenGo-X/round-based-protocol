@@ -12,4 +12,3 @@ members = [
     "examples/random-generation-protocol",
     "examples/two-party-random-generation",
 ]
-
