@@ -6,8 +6,7 @@ use std::{fmt, iter};
 use generic_array::GenericArray;
 use typenum::{Unsigned, U32};
 
-use futures::{sink, stream};
-use futures::{Sink, Stream};
+use futures::{sink, Sink, Stream};
 
 use delivery_core::round_store::{MessagesStore as _, RoundInput};
 use delivery_core::serialization_backend::{Bincode, DeserializationBackend, SerializationBackend};
@@ -24,11 +23,14 @@ pub use self::client::{
     ApiClient, Authenticated, Error as ApiError, JoinedRoom, NotAuthenticated, Subscription,
 };
 pub use self::sorted_list::SortedList;
+pub use reqwest::Client as HttpClient;
 
 mod client;
 mod sorted_list;
 
 pub struct Delivery<C: CryptoSuite, S = Bincode, D = Bincode> {
+    i: u16,
+
     api_client: ApiClient<JoinedRoom<C>>,
     subscription: Subscription<C>,
     parties: SizeU16<SortedList<C::VerificationKey>>,
@@ -45,14 +47,14 @@ where
     M: Send + 'static,
     C: CryptoSuite,
     S: SerializationBackend<M> + Send + 'static,
-    D: DeserializationBackend<M>,
+    D: DeserializationBackend<M> + Send + 'static,
 {
     type Send = Outgoings<M, S>;
-    type Receive = Incomings<M>;
+    type Receive = Incomings<M, D>;
     type SendError = SendError<S::Error>;
-    type ReceiveError = ReceiveError;
+    type ReceiveError = ReceiveError<D::Error>;
 
-    fn split(mut self) -> (Self::Receive, Self::Send) {
+    fn split(self) -> (Self::Receive, Self::Send) {
         let sending = Sending {
             api_client: self.api_client,
             parties: self.parties.clone(),
@@ -65,7 +67,23 @@ where
             Ok(sending)
         });
         let sending = Outgoings::<M, S>(Box::pin(sending));
-        todo!()
+
+        let mut receiving = Receiving {
+            subscription: self.subscription,
+            parties: self.parties.clone(),
+            decryption_keys: self.decryption_keys,
+            deserializer: self.deserializer,
+        };
+        let receiving = Incomings::<M, D>(Box::pin(async_stream::stream! {
+            loop {
+                match receiving.next().await.transpose() {
+                    Some(received) => yield received,
+                    None => break,
+                }
+            }
+        }));
+
+        (receiving, sending)
     }
 }
 
@@ -120,6 +138,73 @@ impl<C: CryptoSuite, S> Sending<C, S> {
             .await
             .map_err(SendReason::Send)?;
         Ok(())
+    }
+}
+
+struct Receiving<C: CryptoSuite, D> {
+    subscription: Subscription<C>,
+    parties: SizeU16<SortedList<C::VerificationKey>>,
+    decryption_keys: HashMap<C::VerificationKey, C::DecryptionKey>,
+
+    deserializer: D,
+}
+
+impl<C, D> Receiving<C, D>
+where
+    C: CryptoSuite,
+{
+    pub async fn next<M>(&mut self) -> Result<Option<Incoming<M>>, ReceiveError<D::Error>>
+    where
+        D: DeserializationBackend<M>,
+    {
+        loop {
+            // Receive message
+            let (header, mut data) = match self
+                .subscription
+                .next()
+                .await
+                .map_err(ReceiveReason::Receive)?
+            {
+                Some(m) => m,
+                None => return Ok(None),
+            };
+
+            // Identify sender
+            let sender = match self.parties.find_index(&header.sender) {
+                Some(i) => i,
+                None => {
+                    // Sender is unknown, silently ignore message
+                    continue;
+                }
+            };
+
+            // Optionally decrypt message
+            if let Some(dk) = self
+                .decryption_keys
+                .get_mut(&header.sender)
+                .filter(|_| !header.is_broadcast)
+            {
+                let tag_size = C::EncryptionTagSize::USIZE;
+                if data.len() < tag_size {
+                    return Err(ReceiveReason::Decrypt.into());
+                }
+
+                let (serialized_msg, tag) = data.split_at_mut(data.len() - tag_size);
+
+                dk.decrypt(&[], serialized_msg, (&*tag).into())
+                    .or(Err(ReceiveReason::Decrypt))?;
+
+                data = serialized_msg;
+            }
+
+            // Deserialize message
+            let msg = self
+                .deserializer
+                .deserialize(data)
+                .map_err(ReceiveReason::Deserialize)?;
+
+            return Ok(Some(Incoming { sender, msg }));
+        }
     }
 }
 
@@ -237,6 +322,8 @@ impl<C: CryptoSuite> Delivery<C> {
         }
 
         Ok(Self {
+            i,
+
             api_client,
             subscription: incomings,
             parties,
@@ -248,6 +335,16 @@ impl<C: CryptoSuite> Delivery<C> {
             decryption_keys,
         })
     }
+
+    // Returns index of local party
+    pub fn party_index(&self) -> u16 {
+        self.i
+    }
+
+    // Returns number of parties
+    pub fn parties_number(&self) -> u16 {
+        self.parties.len()
+    }
 }
 
 impl<C: CryptoSuite, S, D> Delivery<C, S, D> {
@@ -255,6 +352,7 @@ impl<C: CryptoSuite, S, D> Delivery<C, S, D> {
         Delivery {
             serializer,
 
+            i: self.i,
             api_client: self.api_client,
             subscription: self.subscription,
             parties: self.parties,
@@ -268,6 +366,7 @@ impl<C: CryptoSuite, S, D> Delivery<C, S, D> {
         Delivery {
             deserializer,
 
+            i: self.i,
             api_client: self.api_client,
             subscription: self.subscription,
             parties: self.parties,
@@ -369,13 +468,15 @@ impl From<HandshakeError> for ConnectError {
     }
 }
 
-pub struct Incomings<M>(Pin<Box<dyn Stream<Item = Result<Incoming<M>, ReceiveError>> + Send>>);
+pub struct Incomings<M, D: DeserializationBackend<M>>(
+    Pin<Box<dyn Stream<Item = Result<Incoming<M>, ReceiveError<D::Error>>> + Send>>,
+);
 pub struct Outgoings<M, S: SerializationBackend<M>>(
     Pin<Box<dyn Sink<Outgoing<M>, Error = SendError<S::Error>> + Send>>,
 );
 
-impl<M> Stream for Incomings<M> {
-    type Item = Result<Incoming<M>, ReceiveError>;
+impl<M, D: DeserializationBackend<M>> Stream for Incomings<M, D> {
+    type Item = Result<Incoming<M>, ReceiveError<D::Error>>;
 
     #[inline(always)]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -403,12 +504,36 @@ impl<M, S: SerializationBackend<M>> Sink<Outgoing<M>> for Outgoings<M, S> {
     }
 }
 
-#[derive(Debug, Error)]
-#[error(transparent)]
-pub struct ReceiveError(#[from] ReceiveReason);
+#[derive(Debug)]
+pub struct ReceiveError<D>(ReceiveReason<D>);
+
+impl<S: fmt::Display> fmt::Display for ReceiveError<S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<D: std::error::Error + 'static> std::error::Error for ReceiveError<D> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
+
+impl<D> From<ReceiveReason<D>> for ReceiveError<D> {
+    fn from(err: ReceiveReason<D>) -> Self {
+        ReceiveError(err)
+    }
+}
 
 #[derive(Debug, Error)]
-enum ReceiveReason {}
+enum ReceiveReason<D> {
+    #[error("message deserialization error")]
+    Deserialize(#[source] D),
+    #[error("receive message")]
+    Receive(#[source] client::Error),
+    #[error("cannot decrypt received message")]
+    Decrypt,
+}
 
 #[derive(Debug)]
 pub struct SendError<S>(SendReason<S>);

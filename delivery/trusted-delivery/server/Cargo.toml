@@ -20,5 +20,16 @@ digest = "0.9"
 thiserror = "1"
 educe = "0.4"
 
+# dev feature
+url = { version = "2.2", optional = true }
+
 [dev-dependencies]
 matches = "0.1"
+
+[features]
+default = []
+dev = ["url"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

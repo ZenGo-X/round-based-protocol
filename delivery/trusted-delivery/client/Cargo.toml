@@ -6,10 +6,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+async-stream = "0.3"
 futures = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 reqwest = { version = "0.11", default-features = false, features = ["json"] }
 url = "2.2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 hex = "0.4"
 
 thiserror = "1"
@@ -23,5 +24,4 @@ delivery-core = { path = "../../core" }
 trusted-delivery-core = { path = "../core", features = ["default-crypto-suite"] }
 
 [dev-dependencies]
-trusted-delivery-server = { path = "../server" }
-rocket = "0.5.0-rc.1"
+trusted-delivery-server = { path = "../server", features = ["dev"] }

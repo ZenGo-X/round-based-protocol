@@ -3,10 +3,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{digest::Output, Digest, Sha256};
 
-use round_based::rounds::{
-    store::{Error as StoreError, RoundInput},
-    ReceiveMessageError, Rounds,
-};
+use round_based::rounds::{Error as StoreError, ReceiveMessageError, RoundInput, Rounds};
 use round_based::{Delivery, Mpc, MpcParty, Outgoing, ProtocolMessage};
 
 #[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]

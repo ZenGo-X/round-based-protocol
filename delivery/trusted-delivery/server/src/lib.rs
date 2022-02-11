@@ -9,6 +9,10 @@ use crate::routes::auth::Challenges;
 mod db;
 mod routes;
 
+#[cfg(any(test, feature = "dev"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "dev")))]
+pub mod dev;
+
 pub fn rocket() -> Rocket<Build> {
     rocket::build()
         .mount(

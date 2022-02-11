@@ -258,7 +258,9 @@ pub struct Subscription<C: CryptoSuite> {
 }
 
 impl<C: CryptoSuite> Subscription<C> {
-    pub async fn next<'s>(&'s mut self) -> Result<Option<(&'s ForwardMessageHeader<C>, &'s [u8])>> {
+    pub async fn next<'s>(
+        &'s mut self,
+    ) -> Result<Option<(&'s ForwardMessageHeader<C>, &'s mut [u8])>> {
         let header_size = Self::header_size();
 
         // Erase message that was already returned
@@ -306,7 +308,7 @@ impl<C: CryptoSuite> Subscription<C> {
                 return Ok(None);
             }
         }
-        let data = &self.buffer[header_size..header_size + data_len];
+        let data = &mut self.buffer[header_size..header_size + data_len];
         self.message_received_and_parsed = true;
 
         // Ensure that signature is valid

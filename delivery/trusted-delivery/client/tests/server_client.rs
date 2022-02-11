@@ -1,12 +1,11 @@
 use std::iter;
 
-use rocket::{Orbit, Rocket};
-
 use trusted_delivery::{ApiClient, JoinedRoom, Subscription};
 use trusted_delivery_core::crypto::default_suite::DefaultSuite;
 use trusted_delivery_core::crypto::*;
 use trusted_delivery_core::publish_msg::Header;
 use trusted_delivery_core::RoomId;
+use trusted_delivery_server::dev::TestServer;
 
 const TEST_ROOM: RoomId = *b"0123456789abcdef0123456789abcdef";
 const ANOTHER_ROOM: RoomId = *b"abcdabcdabcdabcdabcdabcdabcdabcd";
@@ -17,7 +16,7 @@ async fn message_is_broadcasted_to_everyone() {
 }
 
 async fn message_is_broadcasted_to_everyone_generic<C: CryptoSuite>() {
-    let server = Server::launch().await;
+    let server = TestServer::launch().await;
     let address = server.address();
 
     let mut group = MockedParties::<C>::generate(&address, TEST_ROOM, 3).await;
@@ -57,7 +56,7 @@ async fn p2p_message_is_sent_only_to_destination() {
 }
 
 async fn p2p_message_is_sent_only_to_destination_generic<C: CryptoSuite>() {
-    let server = Server::launch().await;
+    let server = TestServer::launch().await;
     let address = server.address();
 
     let mut group = MockedParties::<C>::generate(&address, TEST_ROOM, 3).await;
@@ -100,7 +99,7 @@ async fn message_appears_only_in_its_room() {
 }
 
 async fn message_appears_only_in_its_room_generic<C: CryptoSuite>() {
-    let server = Server::launch().await;
+    let server = TestServer::launch().await;
     let address = server.address();
 
     let mut group1 = MockedParties::<C>::generate(&address, TEST_ROOM, 3).await;
@@ -169,73 +168,5 @@ impl<C: CryptoSuite> MockedParties<C> {
             subscription,
             client,
         }
-    }
-}
-
-pub struct Server {
-    port: u16,
-    shutdown: Option<rocket::Shutdown>,
-    _handle: tokio::task::JoinHandle<Result<(), rocket::Error>>,
-}
-
-impl Server {
-    pub async fn launch() -> Self {
-        let (launched_tx, launched_rx) = tokio::sync::oneshot::channel();
-
-        struct OnLaunch(std::sync::Mutex<Option<tokio::sync::oneshot::Sender<u16>>>);
-        impl OnLaunch {
-            pub fn new(channel: tokio::sync::oneshot::Sender<u16>) -> Self {
-                OnLaunch(From::from(Some(channel)))
-            }
-        }
-        #[rocket::async_trait]
-        impl rocket::fairing::Fairing for OnLaunch {
-            fn info(&self) -> rocket::fairing::Info {
-                rocket::fairing::Info {
-                    name: "on launch fairing",
-                    kind: rocket::fairing::Kind::Liftoff,
-                }
-            }
-            async fn on_liftoff(&self, rocket: &Rocket<Orbit>) {
-                let channel = {
-                    let mut lock = self.0.lock().unwrap();
-                    lock.take()
-                };
-                if let Some(channel) = channel {
-                    let _ = channel.send(rocket.config().port);
-                }
-            }
-        }
-
-        let rocket = trusted_delivery_server::rocket()
-            .configure(rocket::Config {
-                address: std::net::Ipv4Addr::new(127, 0, 0, 1).into(),
-                port: 0,
-                ..rocket::Config::debug_default()
-            })
-            .attach(OnLaunch::new(launched_tx))
-            .ignite()
-            .await
-            .unwrap();
-        let shutdown = rocket.shutdown();
-
-        let _handle = tokio::spawn(rocket.launch());
-        let port = launched_rx.await.unwrap();
-
-        Self {
-            port,
-            shutdown: Some(shutdown),
-            _handle,
-        }
-    }
-
-    pub fn address(&self) -> reqwest::Url {
-        reqwest::Url::parse(&format!("http://127.0.0.1:{}/", self.port)).unwrap()
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.shutdown.take().map(|shutdown| shutdown.notify());
     }
 }

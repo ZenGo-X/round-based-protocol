@@ -9,7 +9,7 @@ use rand::SeedableRng;
 use random_generation_protocol::{
     protocol_of_random_generation, CommitMsg, DecommitMsg, Error, Msg,
 };
-use round_based::rounds::store::RoundInput;
+use round_based::rounds::RoundInput;
 use round_based::rounds::{ReceiveMessageError, Rounds};
 use round_based::{Delivery, Incoming, MpcParty, Outgoing};
 
@@ -224,7 +224,9 @@ async fn protocol_ignores_io_error_if_it_is_completed() {
             }),
         }),
         Err(DummyError),
-    ]).await.unwrap();
+    ])
+    .await
+    .unwrap();
 
     assert_eq!(output, PROTOCOL_OUTPUT);
 }
@@ -257,9 +259,15 @@ async fn protocol_terminates_with_error_if_io_error_happens_at_round2() {
                 randomness: PARTY2_RANDOMNESS,
             }),
         }),
-    ]).await;
+    ])
+    .await;
 
-    assert_matches!(output, Err(Error::Round2Receive(ReceiveMessageError::ReceiveMessageError(_))));
+    assert_matches!(
+        output,
+        Err(Error::Round2Receive(
+            ReceiveMessageError::ReceiveMessageError(_)
+        ))
+    );
 }
 
 #[tokio::test]
@@ -290,9 +298,15 @@ async fn protocol_terminates_with_error_if_io_error_happens_at_round1() {
                 randomness: PARTY2_RANDOMNESS,
             }),
         }),
-    ]).await;
+    ])
+    .await;
 
-    assert_matches!(output, Err(Error::Round1Receive(ReceiveMessageError::ReceiveMessageError(_))));
+    assert_matches!(
+        output,
+        Err(Error::Round1Receive(
+            ReceiveMessageError::ReceiveMessageError(_)
+        ))
+    );
 }
 
 #[tokio::test]
@@ -316,13 +330,17 @@ async fn protocol_terminates_with_error_if_unexpected_eof_happens_at_round2() {
                 randomness: PARTY1_RANDOMNESS,
             }),
         }),
-    ]).await;
+    ])
+    .await;
 
-    assert_matches!(output, Err(Error::Round2Receive(ReceiveMessageError::UnexpectedEof)));
+    assert_matches!(
+        output,
+        Err(Error::Round2Receive(ReceiveMessageError::UnexpectedEof))
+    );
 }
 
 #[tokio::test]
-async fn all_non_completed_rounds_are_terminated_with_the_same_error_if_io_error_occurred () {
+async fn all_non_completed_rounds_are_terminated_with_the_same_error_if_io_error_occurred() {
     let incomings = [Err::<Incoming<Msg>, DummyError>(DummyError)];
     let mut rounds = Rounds::listen(stream::iter(incomings));
     let round1 = rounds.add_round(RoundInput::<CommitMsg>::new(0, 3));
@@ -341,7 +359,8 @@ async fn all_non_completed_rounds_are_terminated_with_the_same_error_if_io_error
 }
 
 #[tokio::test]
-async fn all_non_completed_rounds_are_terminated_with_unexpected_eof_error_if_incoming_channel_suddenly_closed() {
+async fn all_non_completed_rounds_are_terminated_with_unexpected_eof_error_if_incoming_channel_suddenly_closed(
+) {
     let mut rounds = Rounds::listen(stream::empty::<Result<Incoming<Msg>, Infallible>>());
     let round1 = rounds.add_round(RoundInput::<CommitMsg>::new(0, 3));
     let round2 = rounds.add_round(RoundInput::<DecommitMsg>::new(0, 3));

@@ -15,5 +15,14 @@ pub use delivery_core::*;
 
 #[cfg(feature = "two-party")]
 pub mod two_party {
+    #[doc(inline)]
     pub use two_party_delivery::*;
+}
+
+#[cfg(feature = "trusted-delivery")]
+pub mod trusted_delivery {
+    #[doc(inline)]
+    pub use trusted_delivery_client::*;
+    #[doc(inline)]
+    pub use trusted_delivery_core::crypto;
 }
