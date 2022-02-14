@@ -6,7 +6,6 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
 use crate::delivery::{Delivery, Incoming, Outgoing};
-use crate::rounds::ProtocolMessage;
 use crate::MpcParty;
 
 pub struct Simulation<M> {
@@ -47,12 +46,7 @@ where
             },
         }
     }
-}
 
-impl<M> Simulation<M>
-where
-    M: ProtocolMessage + Clone + Send + Unpin + 'static,
-{
     pub fn add_party(&mut self) -> MpcParty<M, SimulationDelivery<M>> {
         let local_party_idx = self.next_party_idx;
         self.next_party_idx += 1;
@@ -72,7 +66,7 @@ where
 
 impl<M> Default for Simulation<M>
 where
-    M: ProtocolMessage + Clone + Send + Unpin + 'static,
+    M: Clone + Send + Unpin + 'static,
 {
     fn default() -> Self {
         Self::new()

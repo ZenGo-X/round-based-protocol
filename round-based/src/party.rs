@@ -4,10 +4,9 @@ use phantom_type::PhantomType;
 
 use crate::blocking::{Blocking, SpawnBlocking, TokioSpawnBlocking};
 use crate::delivery::Delivery;
-use crate::rounds::ProtocolMessage;
 
 pub trait Mpc: internal::Sealed {
-    type ProtocolMessage: ProtocolMessage + Send + 'static;
+    type ProtocolMessage: Send + 'static;
     type Delivery: Delivery<
         Self::ProtocolMessage,
         SendError = Self::SendError,
@@ -34,7 +33,7 @@ pub struct MpcParty<M, D, B = TokioSpawnBlocking> {
 
 impl<M, D> MpcParty<M, D>
 where
-    M: ProtocolMessage + Send + 'static,
+    M: Send + 'static,
     D: Delivery<M>,
 {
     /// Connects party to the network
@@ -51,7 +50,7 @@ where
 
 impl<M, D, X> MpcParty<M, D, X>
 where
-    M: ProtocolMessage + Send + 'static,
+    M: Send + 'static,
     D: Delivery<M>,
 {
     /// Overrides the way how protocol will spawn blocking tasks
@@ -74,7 +73,7 @@ impl<M, D, B> internal::Sealed for MpcParty<M, D, B> {}
 
 impl<M, D, B> Mpc for MpcParty<M, D, B>
 where
-    M: ProtocolMessage + Send + 'static,
+    M: Send + 'static,
     D: Delivery<M>,
     D::SendError: Error,
     D::ReceiveError: Error + Send + Sync + Unpin + 'static,

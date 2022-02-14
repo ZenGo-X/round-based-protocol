@@ -44,7 +44,7 @@ proptest = "1"
 matches = "0.1"
 
 [features]
-default = ["two-party", "trusted-delivery"]
+default = []
 two-party = ["two-party-delivery"]
 two-party-insecure = ["two-party", "two-party-delivery/insecure"]
 mock-tls = ["delivery-core/mock-tls"]

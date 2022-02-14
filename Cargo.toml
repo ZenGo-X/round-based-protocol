@@ -3,6 +3,7 @@ members = [
     "round-based",
     "round-based-tests",
     "round-based-derive",
+    "round-based-ing",
     "delivery/core",
     "delivery/trusted-delivery/core",
     "delivery/trusted-delivery/client",
