@@ -8,24 +8,24 @@ edition = "2021"
 [dependencies]
 futures = "0.3"
 thiserror = "1"
-tracing = { version = "0.1", optional = true }
+tracing = "0.1"
+serde = { version = "1", features = ["derive"]}
 
 round-based = { path = "../round-based" }
 ecdsa-mpc = { git = "https://github.com/ing-bank/threshold-signatures" }
+curv-kzen = "0.2"
+secp256k1 = "0.15"
+sorted-vec = "0.7"
+digest = "0.9"
 
 [dev-dependencies]
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-curv-kzen = "0.2"
 serde_json = "1"
 lazy_static = "1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 test-case = "1.2"
-
-[features]
-default = []
-debugging = ["tracing"]
+sha2 = "0.9"
 
 [[test]]
 name = "t_ecdsa"
-required-features = ["debugging"]

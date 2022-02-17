@@ -3,10 +3,10 @@ use std::time::Duration;
 
 use tracing::{span, trace, Level, Span};
 
-use ecdsa_mpc::protocol::{Address, InputMessage, OutputMessage};
+use ecdsa_mpc::protocol::{InputMessage, OutputMessage};
 use ecdsa_mpc::state_machine::{State, Transition};
 
-use crate::{party_index_to_u16, StateMachineTraits};
+use crate::generic::StateMachineTraits;
 
 /// Wraps [state machine](State) and logs every usage of it
 pub struct Debugging<S> {
@@ -50,10 +50,7 @@ where
         for msg in msgs.iter().flatten() {
             trace!(
                 parent: &self.span,
-                recipient = match msg.recipient {
-                    Address::Peer(index) => Some(party_index_to_u16(index)),
-                    Address::Broadcast => None
-                },
+                recipient = ?msg.recipient,
                 msg = ?msg.body,
                 "Enqueued outgoing message"
             )
@@ -68,7 +65,7 @@ where
     ) -> bool {
         trace!(
             parent: &self.span,
-            sender = party_index_to_u16(msg.sender),
+            sender = ?msg.sender,
             msg = ?msg.body,
             "State::is_message_expected"
         );
