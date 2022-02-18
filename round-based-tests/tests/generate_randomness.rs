@@ -72,7 +72,7 @@ async fn run_party<C: CryptoSuite>(
         .context("connect error")?;
     let i = delivery.party_index();
     let n = delivery.parties_number();
-    let party = MpcParty::connect(delivery);
+    let party = MpcParty::connected(delivery);
 
     protocol_of_random_generation(party, i, n, OsRng)
         .await

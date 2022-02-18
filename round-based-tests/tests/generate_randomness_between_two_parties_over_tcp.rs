@@ -33,7 +33,7 @@ async fn server<R: RngCore>(listener: TcpListener, rng: R) -> anyhow::Result<[u8
         .accept()
         .await
         .context("accept a client")?;
-    let party = MpcParty::connect(delivery);
+    let party = MpcParty::connected(delivery);
     protocol_of_random_generation(party, 0, 2, rng)
         .await
         .context("protocol didn't complete")
@@ -45,7 +45,7 @@ async fn client<R: RngCore>(server_addr: SocketAddr, rng: R) -> anyhow::Result<[
         .connect(server_addr)
         .await
         .context("connect to the server")?;
-    let party = MpcParty::connect(delivery);
+    let party = MpcParty::connected(delivery);
     protocol_of_random_generation(party, 1, 2, rng)
         .await
         .context("protocol didn't complete")

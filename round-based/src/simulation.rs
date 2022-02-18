@@ -51,7 +51,7 @@ where
         let local_party_idx = self.next_party_idx;
         self.next_party_idx += 1;
 
-        MpcParty::connect(SimulationDelivery {
+        MpcParty::connected(SimulationDelivery {
             incoming: SimulationIncoming {
                 local_party_idx,
                 receiver: BroadcastStream::new(self.channel.subscribe()),

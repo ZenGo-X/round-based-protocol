@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("Client connected: {:?}", client_addr);
         eprintln!();
 
-        let party = MpcParty::connect(delivery);
+        let party = MpcParty::connected(delivery);
         let randomness = protocol_of_random_generation(party, 0, 2, rand::rngs::OsRng)
             .await
             .context("protocol didn't complete")?;

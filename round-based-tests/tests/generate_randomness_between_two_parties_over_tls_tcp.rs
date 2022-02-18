@@ -49,7 +49,7 @@ async fn server<R: RngCore>(
         .accept()
         .await
         .context("accept client")?;
-    let party = MpcParty::connect(delivery);
+    let party = MpcParty::connected(delivery);
 
     protocol_of_random_generation(party, 0, 2, rng)
         .await
@@ -66,7 +66,7 @@ async fn client<R: RngCore>(
         .connect(ServerName::try_from("example.com")?, server_addr)
         .await
         .context("connect to server")?;
-    let party = MpcParty::connect(delivery);
+    let party = MpcParty::connected(delivery);
 
     protocol_of_random_generation(party, 1, 2, rng)
         .await

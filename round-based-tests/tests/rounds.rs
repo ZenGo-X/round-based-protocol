@@ -378,7 +378,7 @@ where
 {
     let rng = rand_chacha::ChaCha8Rng::from_seed(PARTY0_SEED);
 
-    let party = MpcParty::connect(MockedDelivery::new(stream::iter(incomings), sink::drain()));
+    let party = MpcParty::connected(MockedDelivery::new(stream::iter(incomings), sink::drain()));
     protocol_of_random_generation(party, 0, 3, rng).await
 }
 

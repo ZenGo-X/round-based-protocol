@@ -36,10 +36,10 @@ where
     M: Send + 'static,
     D: Delivery<M>,
 {
-    /// Connects party to the network
+    /// Party connected to the network
     ///
     /// Takes the delivery object determining how to deliver/receive other parties' messages
-    pub fn connect(delivery: D) -> Self {
+    pub fn connected(delivery: D) -> Self {
         Self {
             delivery,
             blocking: Blocking::new(TokioSpawnBlocking),

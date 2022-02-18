@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
         .connect(args.address)
         .await
         .context("connect to the server")?;
-    let party = MpcParty::connect(delivery);
+    let party = MpcParty::connected(delivery);
 
     eprintln!("Connection established, carrying out the protocol");
     eprintln!();

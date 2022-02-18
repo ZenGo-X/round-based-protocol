@@ -16,7 +16,7 @@
 //! let mut server = Server::<Msg>::bind("127.0.0.1:9090").await?;
 //! loop {
 //!     let (client, _client_addr) = server.accept().await?;
-//!     let party = MpcParty::connect(client);
+//!     let party = MpcParty::connected(client);
 //!     // ... run mpc here, e.g.:
 //!     let randomness = protocol_of_random_generation(party, 0, 2, rand::rngs::OsRng).await?;
 //!     println!("Randomness: {}", hex::encode(randomness));
@@ -35,7 +35,7 @@
 //! # async fn protocol_of_random_generation<R: rand::RngCore, M: round_based::Mpc<ProtocolMessage = Msg>>(party: M,i: u16,n: u16,mut rng: R) -> Result<[u8; 32], Box<dyn std::error::Error>> { todo!() }
 //!
 //! let conn = ClientBuilder::new().connect::<Msg, _>("127.0.0.1:9090").await?;
-//! let party = MpcParty::connect(conn);
+//! let party = MpcParty::connected(conn);
 //! // ... run mpc here, e.g.:
 //! let randomness = protocol_of_random_generation(party, 1, 2, rand::rngs::OsRng).await?;
 //! println!("Randomness: {}", hex::encode(randomness));
