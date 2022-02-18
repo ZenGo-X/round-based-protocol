@@ -75,26 +75,29 @@ impl Keygen {
     ///
     /// By default, we generate a new random setup of 2048 bits group order.
     /// Note that this operation is computationally heavy.
-    pub fn set_zkp_setup(&mut self, setup: ZkpSetup) {
+    pub fn set_zkp_setup(mut self, setup: ZkpSetup) -> Self {
         self.zkp_setup = Some(setup);
+        self
     }
 
     /// Sets initial keygen keys
     ///
     /// By default, we generate initial keys and store them in memory.
     pub fn set_initial_keys(
-        &mut self,
+        mut self,
         public_keys: InitialPublicKeys,
         keys_loader: Arc<Box<dyn SecretKeyLoader + Send + Sync>>,
-    ) {
-        self.initial_keys = Some((public_keys, keys_loader))
+    ) -> Self {
+        self.initial_keys = Some((public_keys, keys_loader));
+        self
     }
 
     /// Enables logging
     ///
     /// All the logs will be spanned with given `span`
-    pub fn enable_logs(&mut self, span: tracing::Span) {
-        self.debugging = Some(span)
+    pub fn enable_logs(mut self, span: tracing::Span) -> Self {
+        self.debugging = Some(span);
+        self
     }
 
     /// Carries out key generation
@@ -173,18 +176,18 @@ pub struct KeyShare {
 
 impl KeyShare {
     /// Returns index of local party that was used at keygen
-    fn local_party_index(&self) -> u16 {
+    pub fn local_party_index(&self) -> u16 {
         self.i
     }
 
     /// Returns number of parties holding shares for this key
-    fn parties_number(&self) -> u16 {
+    pub fn parties_number(&self) -> u16 {
         self.n
     }
 
     /// Returns minimum number of parties required to perform
     /// signing
-    fn min_signers(&self) -> u16 {
+    pub fn min_signers(&self) -> u16 {
         self.min_signers
     }
 
@@ -292,6 +295,8 @@ enum BugReason {
     InvalidParameters(#[source] keygen::KeygenError),
     #[error("key share appear to be incorrect though it must be validated at this point")]
     IncorrectKeyShare(IncorrectKeyShare),
+    #[error("party index overflows u16 though we checked its correctness")]
+    PartyIndexOverflowsU16,
 }
 
 impl<IErr, OErr> From<BugReason> for KeygenError<IErr, OErr> {
@@ -328,6 +333,7 @@ fn party_index_to_u16(index: &PartyIndex) -> Option<u16> {
 
 /// Signing protocol
 pub struct Signing {
+    local_party_index: u16,
     key_share: KeyShare,
     msg: Message,
     signers: Parties,
@@ -339,7 +345,7 @@ impl Signing {
     ///
     /// Returns error if signing parameters are not consistent, see [InvalidSigningParameters]
     /// for details.
-    pub fn new<D>(
+    pub fn new(
         key_share: KeyShare,
         signers: &SortedVec<u16>,
         msg: Message,
@@ -359,12 +365,12 @@ impl Signing {
         }
 
         // Check that local party is in list of signers
-        if signers
+        let local_party_index = signers
             .binary_search(&key_share.local_party_index())
-            .is_err()
-        {
-            return Err(InvalidSigningParameters::PartyNotInSignersList);
-        }
+            .or(Err(InvalidSigningParameters::PartyNotInSignersList))?;
+        let local_party_index = local_party_index
+            .try_into()
+            .or(Err(BugReason::PartyIndexOverflowsU16))?;
 
         // Construct list of signers (for ing code)
         let signers = signers
@@ -374,6 +380,7 @@ impl Signing {
         let signers = Parties::try_from(signers).or(Err(BugReason::PartiesListNotSorted))?;
 
         Ok(Self {
+            local_party_index,
             key_share,
             msg,
             signers,
@@ -384,8 +391,9 @@ impl Signing {
     /// Enables logging
     ///
     /// All the logs will be spanned with given `span`
-    pub fn enable_logs(&mut self, span: tracing::Span) {
-        self.debugging = Some(span)
+    pub fn enable_logs(mut self, span: tracing::Span) -> Self {
+        self.debugging = Some(span);
+        self
     }
 
     /// Carries out threshold signing
@@ -396,7 +404,7 @@ impl Signing {
     where
         M: Mpc<ProtocolMessage = SigningMsg>,
     {
-        let i = self.key_share.local_party_index();
+        let i = self.local_party_index();
         let pk = self.key_share.public_key;
 
         let initial_state = signing::Phase1::new(
@@ -435,9 +443,17 @@ impl Signing {
 
         Ok(signature)
     }
+
+    /// Returns index of local party in the signing protocol
+    ///
+    /// Party's index in signing protocol is position of that party in list of signers.
+    pub fn local_party_index(&self) -> u16 {
+        self.local_party_index
+    }
 }
 
 /// A (hashed) message input to an ECDSA signature
+#[derive(Clone, Copy)]
 pub struct Message(curv_kzen::FE);
 
 impl Message {
