@@ -163,6 +163,7 @@ pub struct Parties(Vec<PartyIndex>);
 
 impl Parties {
     /// Number of parties taking part in computation
+    #[allow(dead_code)]
     pub fn len(&self) -> u16 {
         self.0
             .len()

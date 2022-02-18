@@ -26,7 +26,7 @@ use crate::debugging::Debugging;
 use crate::generic::Parties;
 
 mod debugging;
-pub mod generic;
+mod generic;
 
 /// Distributed key generation
 pub struct Keygen {
