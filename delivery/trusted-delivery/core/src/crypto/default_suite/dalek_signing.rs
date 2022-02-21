@@ -150,3 +150,28 @@ impl Clone for Keypair {
         }
     }
 }
+
+impl Serializable for Keypair {
+    type Size = typenum::U64;
+    type Error = InvalidKey;
+    const NAME: &'static str = "ed25519 signing key";
+
+    fn to_bytes(&self) -> GenericArray<u8, Self::Size> {
+        let mut bytes = GenericArray::<u8, typenum::U64>::default();
+        bytes.copy_from_slice(&self.secret_key.to_bytes());
+        bytes
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
+        let secret_key = ExpandedSecretKey::from_bytes(bytes).or(Err(InvalidKey))?;
+        let public_key = PublicKey(ed25519_dalek::PublicKey::from(&secret_key));
+        Ok(Self {
+            public_key,
+            secret_key,
+        })
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("invalid signing key")]
+pub struct InvalidKey;
