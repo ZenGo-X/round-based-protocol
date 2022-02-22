@@ -8,6 +8,7 @@ use digest::Digest;
 use generic_array::GenericArray;
 use never::Never;
 use rand_v7::rngs::OsRng;
+use thiserror::Error;
 use typenum::{U32, U64};
 
 use crate::crypto::{
