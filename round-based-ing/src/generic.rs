@@ -13,14 +13,14 @@ pub async fn execute_ing_protocol<S, T, M>(
     parties: Parties,
 ) -> Result<T::FinalState, Error<T::ErrorState, M::ReceiveError, M::SendError>>
 where
-    S: State<T>,
+    S: State<T> + Send,
     T: StateMachineTraits,
     M: Mpc<ProtocolMessage = T::Msg>,
 {
     let MpcParty { delivery, .. } = party.into_party();
     let (mut incomings, mut outgoings) = delivery.split();
 
-    let mut state: Box<dyn State<T>> = Box::new(initial_state);
+    let mut state: Box<dyn State<T> + Send> = Box::new(initial_state);
 
     loop {
         if let Some(msgs_to_send) = state.start() {
