@@ -565,5 +565,5 @@ enum SendReason<S> {
     #[error("couldn't encrypt message")]
     Encrypt,
     #[error("send message to server")]
-    Send(client::Error),
+    Send(#[source] client::Error),
 }
