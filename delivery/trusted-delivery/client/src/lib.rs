@@ -296,7 +296,7 @@ impl<C: CryptoSuite> Delivery<C> {
         for ((local, remote), remote_identity) in ephemeral_sk
             .into_iter()
             .zip(ephemeral_remote)
-            .zip(parties.iter())
+            .zip(parties.iter().filter(|pk_i| **pk_i != pk))
         {
             let mut encryption_key = <C::EncryptionScheme as EncryptionScheme>::Key::default();
             let mut decryption_key = <C::EncryptionScheme as EncryptionScheme>::Key::default();
