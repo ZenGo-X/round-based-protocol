@@ -505,7 +505,7 @@ impl<M, S: SerializationBackend<M>> Sink<Outgoing<M>> for Outgoings<M, S> {
 }
 
 #[derive(Debug)]
-pub struct ReceiveError<D>(ReceiveReason<D>);
+pub struct ReceiveError<D = bincode::Error>(ReceiveReason<D>);
 
 impl<S: fmt::Display> fmt::Display for ReceiveError<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -536,7 +536,7 @@ enum ReceiveReason<D> {
 }
 
 #[derive(Debug)]
-pub struct SendError<S>(SendReason<S>);
+pub struct SendError<S = bincode::Error>(SendReason<S>);
 
 impl<S: fmt::Display> fmt::Display for SendError<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

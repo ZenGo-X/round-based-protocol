@@ -12,6 +12,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 reqwest = { version = "0.11", default-features = false, features = ["json"] }
 url = "2.2"
 hex = "0.4"
+bincode = "1"
 
 thiserror = "1"
 educe = "0.4"
