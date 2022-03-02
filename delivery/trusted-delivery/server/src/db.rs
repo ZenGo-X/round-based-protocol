@@ -62,7 +62,8 @@ impl<C: CryptoSuite> Db<C> {
                 }
             }
             Entry::Vacant(entry) => {
-                let room = entry.insert(Arc::new(Room::empty())).clone();
+                let room = Arc::new(Room::empty());
+                entry.insert(room.clone());
                 LockedDb {
                     inner: room,
                     _lock: DbLock::WriteLock(rooms),
@@ -142,7 +143,15 @@ impl<C: CryptoSuite> Room<C> {
     }
 
     pub fn is_abandoned(&self) -> bool {
-        self.subscribers.load(Ordering::Relaxed) == 0 && self.writers.load(Ordering::Relaxed) == 0
+        self.subscribers() == 0 && self.writers() == 0
+    }
+
+    pub fn subscribers(&self) -> usize {
+        self.subscribers.load(Ordering::Relaxed)
+    }
+
+    pub fn writers(&self) -> usize {
+        self.writers.load(Ordering::Relaxed)
     }
 }
 

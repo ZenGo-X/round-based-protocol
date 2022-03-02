@@ -263,64 +263,74 @@ impl<C: CryptoSuite> Subscription<C> {
     ) -> Result<Option<(&'s ForwardMessageHeader<C>, &'s mut [u8])>> {
         let header_size = Self::header_size();
 
-        // Erase message that was already returned
-        if self.message_received_and_parsed {
+        loop {
+            // Erase message that was already returned
+            if self.message_received_and_parsed {
+                let data_len = self
+                    .parsed_header
+                    .as_ref()
+                    .map(|header| usize::from(header.data_len))
+                    .expect("header must be parsed at this point");
+                self.buffer.copy_within(header_size + data_len.., 0);
+                self.buffer
+                    .resize(self.buffer.len() - (header_size + data_len), 0);
+
+                self.message_received_and_parsed = false;
+                self.parsed_header = None;
+            }
+
+            // Receive header
+            while self.buffer.len() < header_size {
+                if self.receive_more().await?.is_none() {
+                    return Ok(None);
+                }
+            }
+
+            // Parse header
+            if self.parsed_header.is_none() {
+                let mut header_bytes =
+                    GenericArray::<u8, <ForwardMessageHeader<C> as Header>::Size>::default();
+                header_bytes.copy_from_slice(&self.buffer[..header_size]);
+
+                // Discard keep-alive messages
+                if header_bytes == Self::keep_alive_header() {
+                    self.buffer.copy_within(header_size.., 0);
+                    self.buffer.resize(self.buffer.len() - header_size, 0);
+                    continue;
+                }
+
+                self.parsed_header = Some(
+                    ForwardMessageHeader::<C>::parse(&header_bytes)
+                        .map_err(Reason::ReceivedInvalidHeader)?,
+                );
+            }
             let data_len = self
                 .parsed_header
                 .as_ref()
-                .map(|header| usize::from(header.data_len))
+                .map(|header| header.data_len)
+                .map(usize::from)
                 .expect("header must be parsed at this point");
-            self.buffer.copy_within(header_size + data_len.., 0);
-            self.buffer
-                .resize(self.buffer.len() - (header_size + data_len), 0);
 
-            self.message_received_and_parsed = false;
-            self.parsed_header = None;
-        }
-
-        // Receive header
-        while self.buffer.len() < header_size {
-            if self.receive_more().await?.is_none() {
-                return Ok(None);
+            // Receive data
+            while self.buffer.len() < header_size + data_len {
+                if self.receive_more().await?.is_none() {
+                    return Ok(None);
+                }
             }
+            let data = &mut self.buffer[header_size..header_size + data_len];
+            self.message_received_and_parsed = true;
+
+            // Ensure that signature is valid
+            let header = self
+                .parsed_header
+                .as_ref()
+                .expect("header must be parsed at this point");
+            header
+                .verify(&self.local_party_identity, data)
+                .or(Err(Reason::SignatureNotValid))?;
+
+            return Ok(Some((header, data)));
         }
-
-        // Parse header
-        if self.parsed_header.is_none() {
-            let mut header_bytes =
-                GenericArray::<u8, <ForwardMessageHeader<C> as Header>::Size>::default();
-            header_bytes.copy_from_slice(&self.buffer[..header_size]);
-            self.parsed_header = Some(
-                ForwardMessageHeader::<C>::parse(&header_bytes)
-                    .map_err(Reason::ReceivedInvalidHeader)?,
-            );
-        }
-        let data_len = self
-            .parsed_header
-            .as_ref()
-            .map(|header| header.data_len)
-            .map(usize::from)
-            .expect("header must be parsed at this point");
-
-        // Receive data
-        while self.buffer.len() < header_size + data_len {
-            if self.receive_more().await?.is_none() {
-                return Ok(None);
-            }
-        }
-        let data = &mut self.buffer[header_size..header_size + data_len];
-        self.message_received_and_parsed = true;
-
-        // Ensure that signature is valid
-        let header = self
-            .parsed_header
-            .as_ref()
-            .expect("header must be parsed at this point");
-        header
-            .verify(&self.local_party_identity, data)
-            .or(Err(Reason::SignatureNotValid))?;
-
-        Ok(Some((header, data)))
     }
 
     async fn receive_more(&mut self) -> Result<Option<()>> {
@@ -340,6 +350,10 @@ impl<C: CryptoSuite> Subscription<C> {
 
     fn header_size() -> usize {
         <<ForwardMessageHeader<C> as Header>::Size as Unsigned>::USIZE
+    }
+
+    fn keep_alive_header() -> GenericArray<u8, <ForwardMessageHeader<C> as Header>::Size> {
+        Default::default()
     }
 }
 
@@ -381,7 +395,7 @@ enum Reason {
         status: StatusCode,
         response_err: Option<String>,
     },
-    #[error("server returned error ({status:?}): {0}")]
+    #[error("server returned error ({status:?}): {description}")]
     ServerReturnedError {
         status: StatusCode,
         description: String,
