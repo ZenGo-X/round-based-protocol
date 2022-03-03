@@ -466,7 +466,14 @@ impl Message {
     where
         D: Digest<OutputSize = U32>,
     {
-        let scalar = curv_kzen::BigInt::from(hash.finalize().as_slice());
+        Self::from_32_bytes(&hash.finalize().into())
+    }
+
+    /// Constructs a message from hash output of 32 bytes length
+    ///
+    /// These 32 bytes **must be** an output of cryptographic hash function like sha256
+    pub fn from_32_bytes(hash_output: &[u8; 32]) -> Self {
+        let scalar = curv_kzen::BigInt::from(hash_output.as_slice());
         let scalar = <curv_kzen::FE as ECScalar<_>>::from(&scalar);
         Self::from_scalar(scalar)
     }
