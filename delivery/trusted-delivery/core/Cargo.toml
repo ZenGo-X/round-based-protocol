@@ -13,6 +13,7 @@ rand = "0.8"
 crypto-mac = "0.11"
 
 serde = { version = "1", features = ["derive"] }
+serde_with = "1.12"
 hex = { version = "0.4", features = ["serde"] }
 phantom-type = "0.3"
 never = "0.1"

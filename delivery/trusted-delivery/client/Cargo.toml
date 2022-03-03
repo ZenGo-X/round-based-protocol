@@ -24,5 +24,8 @@ typenum = "=1.13"
 delivery-core = { path = "../../core" }
 trusted-delivery-core = { path = "../core", features = ["default-crypto-suite"] }
 
+serde = { version = "1", features = ["derive"] }
+serde_with = "1.12"
+
 [dev-dependencies]
 trusted-delivery-server = { path = "../server", features = ["dev"] }

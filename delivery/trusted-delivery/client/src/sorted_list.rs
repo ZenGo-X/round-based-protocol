@@ -1,3 +1,5 @@
+use serde::{Deserializer, Serializer};
+use serde_with::{DeserializeAs, SerializeAs};
 use std::ops::{Deref, DerefMut, Index, IndexMut};
 use thiserror::Error;
 
@@ -17,6 +19,31 @@ impl<T> Deref for SortedList<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl<T, U> SerializeAs<SortedList<T>> for Vec<U>
+where
+    U: SerializeAs<T>,
+{
+    fn serialize_as<S>(source: &SortedList<T>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        <[U] as SerializeAs<[T]>>::serialize_as(&source, serializer)
+    }
+}
+
+impl<'de, T: Ord, U> DeserializeAs<'de, SortedList<T>> for Vec<U>
+where
+    U: DeserializeAs<'de, T>,
+{
+    fn deserialize_as<D>(deserializer: D) -> Result<SortedList<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let list = <Vec<U> as DeserializeAs<Vec<T>>>::deserialize_as(deserializer)?;
+        Ok(SortedList::from(list))
     }
 }
 
