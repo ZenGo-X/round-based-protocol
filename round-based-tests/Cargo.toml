@@ -22,6 +22,5 @@ matches = "0.1"
 thiserror = "1"
 url = "2.2"
 
-round-based = { path = "../round-based", features = ["two-party-insecure", "mock-tls"] }
+round-based = { path = "../round-based", features = ["mock-tls"] }
 random-generation-protocol = { path = "../examples/random-generation-protocol" }
-trusted-delivery-server = { path = "../delivery/trusted-delivery/server", features = ["dev"] }

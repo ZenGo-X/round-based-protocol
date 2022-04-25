@@ -1,16 +1,14 @@
-use matches::assert_matches;
 use std::convert::Infallible;
-use std::sync::Arc;
 
 use futures::{sink, stream, Sink, Stream};
 use hex_literal::hex;
+use matches::assert_matches;
 use rand::SeedableRng;
 
 use random_generation_protocol::{
     protocol_of_random_generation, CommitMsg, DecommitMsg, Error, Msg,
 };
-use round_based::rounds::RoundInput;
-use round_based::rounds::{ReceiveMessageError, Rounds};
+use round_based::rounds::{CompleteRoundError, RoundInput, Rounds};
 use round_based::{Delivery, Incoming, MpcParty, Outgoing};
 
 const PARTY0_SEED: [u8; 32] =
@@ -82,9 +80,7 @@ async fn protocol_terminates_with_error_if_party_tries_to_overwrite_message_at_r
 
     assert_matches!(
         output,
-        Err(Error::Round1Receive(
-            ReceiveMessageError::ProcessMessageError(_)
-        ))
+        Err(Error::Round1Receive(CompleteRoundError::ProcessMessage(_)))
     )
 }
 
@@ -120,9 +116,7 @@ async fn protocol_terminates_with_error_if_party_tries_to_overwrite_message_at_r
 
     assert_matches!(
         output,
-        Err(Error::Round2Receive(
-            ReceiveMessageError::ProcessMessageError(_)
-        ))
+        Err(Error::Round2Receive(CompleteRoundError::ProcessMessage(_)))
     )
 }
 
@@ -138,9 +132,7 @@ async fn protocol_terminates_if_received_message_from_unknown_sender_at_round1()
 
     assert_matches!(
         output,
-        Err(Error::Round1Receive(
-            ReceiveMessageError::ProcessMessageError(_)
-        ))
+        Err(Error::Round1Receive(CompleteRoundError::ProcessMessage(_)))
     )
 }
 
@@ -182,18 +174,6 @@ async fn protocol_ignores_message_that_goes_to_completed_round() {
     .unwrap();
 
     assert_eq!(output, PROTOCOL_OUTPUT);
-}
-
-#[tokio::test]
-async fn round_terminates_with_error_if_rounds_handling_is_aborted() {
-    let mut rounds = Rounds::listen(stream::pending::<Result<Incoming<Msg>, Infallible>>());
-    let round1 = rounds.add_round(RoundInput::<CommitMsg>::new(0, 3));
-    let round2 = rounds.add_round(RoundInput::<DecommitMsg>::new(0, 3));
-    let handle = rounds.start_in_background();
-
-    handle.abort();
-    assert_matches!(round1.await, Err(ReceiveMessageError::Aborted));
-    assert_matches!(round2.await, Err(ReceiveMessageError::Aborted));
 }
 
 #[tokio::test]
@@ -262,12 +242,7 @@ async fn protocol_terminates_with_error_if_io_error_happens_at_round2() {
     ])
     .await;
 
-    assert_matches!(
-        output,
-        Err(Error::Round2Receive(
-            ReceiveMessageError::ReceiveMessageError(_)
-        ))
-    );
+    assert_matches!(output, Err(Error::Round2Receive(CompleteRoundError::Io(_))));
 }
 
 #[tokio::test]
@@ -301,12 +276,7 @@ async fn protocol_terminates_with_error_if_io_error_happens_at_round1() {
     ])
     .await;
 
-    assert_matches!(
-        output,
-        Err(Error::Round1Receive(
-            ReceiveMessageError::ReceiveMessageError(_)
-        ))
-    );
+    assert_matches!(output, Err(Error::Round1Receive(CompleteRoundError::Io(_))));
 }
 
 #[tokio::test]
@@ -335,39 +305,26 @@ async fn protocol_terminates_with_error_if_unexpected_eof_happens_at_round2() {
 
     assert_matches!(
         output,
-        Err(Error::Round2Receive(ReceiveMessageError::UnexpectedEof))
+        Err(Error::Round2Receive(CompleteRoundError::UnexpectedEof))
     );
-}
-
-#[tokio::test]
-async fn all_non_completed_rounds_are_terminated_with_the_same_error_if_io_error_occurred() {
-    let incomings = [Err::<Incoming<Msg>, DummyError>(DummyError)];
-    let mut rounds = Rounds::listen(stream::iter(incomings));
-    let round1 = rounds.add_round(RoundInput::<CommitMsg>::new(0, 3));
-    let round2 = rounds.add_round(RoundInput::<DecommitMsg>::new(0, 3));
-    let _handle = rounds.start_in_background();
-
-    let round1_err: Arc<DummyError> = match round1.await {
-        Err(ReceiveMessageError::ReceiveMessageError(err)) => err,
-        output => panic!("unexpected round1 output: {:?}", output),
-    };
-    let round2_err: Arc<DummyError> = match round2.await {
-        Err(ReceiveMessageError::ReceiveMessageError(err)) => err,
-        output => panic!("unexpected round2 output: {:?}", output),
-    };
-    assert_eq!(Arc::as_ptr(&round1_err), Arc::as_ptr(&round2_err));
 }
 
 #[tokio::test]
 async fn all_non_completed_rounds_are_terminated_with_unexpected_eof_error_if_incoming_channel_suddenly_closed(
 ) {
-    let mut rounds = Rounds::listen(stream::empty::<Result<Incoming<Msg>, Infallible>>());
+    let mut rounds = Rounds::builder();
     let round1 = rounds.add_round(RoundInput::<CommitMsg>::new(0, 3));
     let round2 = rounds.add_round(RoundInput::<DecommitMsg>::new(0, 3));
-    let _handle = rounds.start_in_background();
+    let mut rounds = rounds.listen(stream::empty::<Result<Incoming<Msg>, Infallible>>());
 
-    assert_matches!(round1.await, Err(ReceiveMessageError::UnexpectedEof));
-    assert_matches!(round2.await, Err(ReceiveMessageError::UnexpectedEof));
+    assert_matches!(
+        rounds.complete(round1).await,
+        Err(CompleteRoundError::UnexpectedEof)
+    );
+    assert_matches!(
+        rounds.complete(round2).await,
+        Err(CompleteRoundError::UnexpectedEof)
+    );
 }
 
 async fn run_protocol<E, I>(incomings: I) -> Result<[u8; 32], Error<E, Infallible>>

@@ -5,11 +5,6 @@ members = [
     "round-based-derive",
     "round-based-ing",
     "delivery/core",
-    "delivery/trusted-delivery/core",
-    "delivery/trusted-delivery/client",
-    "delivery/trusted-delivery/server",
-    "delivery/two-party",
     "delivery/utils",
     "examples/random-generation-protocol",
-    "examples/two-party-random-generation",
 ]

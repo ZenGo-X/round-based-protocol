@@ -1,315 +1,345 @@
+use std::any::Any;
 use std::collections::HashMap;
-use std::fmt::{Debug, Display};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::fmt::Debug;
+use std::mem;
 
 use delivery_core::Incoming;
-use futures::{ready, TryStream, TryStreamExt};
+use futures::{Stream, StreamExt};
+use never::Never;
 use phantom_type::PhantomType;
 use thiserror::Error;
-use tokio::sync::oneshot;
-use tracing::{event, span, Level};
+use tracing::{debug, error, trace, trace_span, warn, Span};
 
 use crate::rounds::MessagesStore;
 
 pub use delivery_core::round_store::*;
 
-pub struct Rounds<M, S>
-where
-    S: TryStream<Ok = Incoming<M>>,
-{
+pub struct Rounds<M, S = ()> {
     incomings: S,
-    rounds: HashMap<
-        u16,
-        Option<Box<dyn ProcessRoundMessage<Msg = M, ReceiveError = Arc<S::Error>> + Send>>,
-    >,
-    not_completed_rounds: u16,
+    rounds: HashMap<u16, Option<Box<dyn ProcessRoundMessage<Msg = M>>>>,
 }
 
-impl<M, S> Rounds<M, S>
+impl<M: ProtocolMessage + 'static> Rounds<M> {
+    pub fn builder() -> RoundsBuilder<M> {
+        RoundsBuilder::new()
+    }
+}
+
+impl<M, S, E> Rounds<M, S>
 where
-    S: TryStream<Ok = Incoming<M>> + Send + Unpin + 'static,
-    S::Error: Display + Send + Sync + 'static,
-    M: ProtocolMessage + 'static,
+    M: ProtocolMessage,
+    S: Stream<Item = Result<Incoming<M>, E>> + Unpin,
 {
-    pub fn listen(incomings: S) -> Self {
-        Self {
-            incomings,
-            rounds: HashMap::new(),
-            not_completed_rounds: 0,
+    #[inline(always)]
+    pub async fn complete<R>(
+        &mut self,
+        _round: Round<R>,
+    ) -> Result<R::Output, CompleteRoundError<R::Error, E>>
+    where
+        R: MessagesStore,
+        M: RoundMessage<R::Msg>,
+    {
+        let round_number = <M as RoundMessage<R::Msg>>::ROUND;
+        let span = trace_span!("Round", n = round_number);
+        debug!(parent: &span, "pending round to complete");
+
+        match self.complete_with_span::<R>(&span).await {
+            Ok(output) => {
+                trace!(parent: &span, "round successfully completed");
+                Ok(output)
+            }
+            Err(err) => {
+                error!(parent: &span, %err, "round terminated with error");
+                Err(err)
+            }
         }
     }
 
-    pub fn add_round<R>(&mut self, message_store: R) -> Round<R::Output, R::Error, S::Error>
+    async fn complete_with_span<R>(
+        &mut self,
+        span: &Span,
+    ) -> Result<R::Output, CompleteRoundError<R::Error, E>>
     where
-        R: MessagesStore + Send,
-        R::Output: Send,
-        R::Error: Send,
-        M: RoundMessage<R::Msg> + 'static,
+        R: MessagesStore,
+        M: RoundMessage<R::Msg>,
     {
-        let (tx, rx) = oneshot::channel();
+        let pending_round = <M as RoundMessage<R::Msg>>::ROUND;
+        if let Some(output) = self.retrieve_round_output_if_its_completed::<R>() {
+            return output;
+        }
+
+        loop {
+            let incoming = match self.incomings.next().await {
+                Some(Ok(msg)) => msg,
+                Some(Err(err)) => return Err(CompleteRoundError::Io(err)),
+                None => return Err(CompleteRoundError::UnexpectedEof),
+            };
+            let message_round_n = incoming.msg.round();
+
+            let message_round = match self.rounds.get_mut(&message_round_n) {
+                Some(Some(round)) => round,
+                Some(None) => {
+                    warn!(
+                        parent: span,
+                        n = message_round_n,
+                        "got message for the round that was already completed, ignoring it"
+                    );
+                    continue;
+                }
+                None => return Err(CompleteRoundError::UnregisteredRound { n: message_round_n }),
+            };
+            if message_round.needs_more_messages().no() {
+                warn!(
+                    parent: span,
+                    n = message_round_n,
+                    "received message for the round that was already completed, ignoring it"
+                );
+                continue;
+            }
+            message_round.process_message(incoming);
+
+            if pending_round == message_round_n {
+                if let Some(output) = self.retrieve_round_output_if_its_completed::<R>() {
+                    return output;
+                }
+            }
+        }
+    }
+
+    fn retrieve_round_output_if_its_completed<R>(
+        &mut self,
+    ) -> Option<Result<R::Output, CompleteRoundError<R::Error, E>>>
+    where
+        R: MessagesStore,
+        M: RoundMessage<R::Msg>,
+    {
+        let round_number = <M as RoundMessage<R::Msg>>::ROUND;
+        let round_slot = match self
+            .rounds
+            .get_mut(&round_number)
+            .ok_or(CompleteRoundError::UnregisteredRound { n: round_number })
+        {
+            Ok(slot) => slot,
+            Err(err) => return Some(Err(err)),
+        };
+        let round = match round_slot
+            .as_mut()
+            .ok_or(CompleteRoundError::RoundAlreadyCompleted)
+        {
+            Ok(round) => round,
+            Err(err) => return Some(Err(err)),
+        };
+        if round.needs_more_messages().no() {
+            Some(Self::retrieve_round_output::<R>(round_slot))
+        } else {
+            None
+        }
+    }
+
+    fn retrieve_round_output<R>(
+        slot: &mut Option<Box<dyn ProcessRoundMessage<Msg = M>>>,
+    ) -> Result<R::Output, CompleteRoundError<R::Error, E>>
+    where
+        R: MessagesStore,
+        M: RoundMessage<R::Msg>,
+    {
+        let mut round = slot.take().ok_or(CompleteRoundError::UnregisteredRound {
+            n: <M as RoundMessage<R::Msg>>::ROUND,
+        })?;
+        match round.take_output() {
+            Ok(Ok(any)) => Ok(*any
+                .downcast::<R::Output>()
+                .or(Err(CompleteRoundError::from(
+                    BugReason::MismatchedOutputType,
+                )))?),
+            Ok(Err(any)) => Err(any
+                .downcast::<CompleteRoundError<R::Error, Never>>()
+                .or(Err(CompleteRoundError::from(
+                    BugReason::MismatchedErrorType,
+                )))?
+                .map_io_err(|e| e.into_any())),
+            Err(err) => Err(BugReason::TakeRoundResult(err).into()),
+        }
+    }
+}
+
+pub struct RoundsBuilder<M> {
+    rounds: HashMap<u16, Option<Box<dyn ProcessRoundMessage<Msg = M>>>>,
+}
+
+impl<M> RoundsBuilder<M>
+where
+    M: ProtocolMessage + 'static,
+{
+    pub fn new() -> Self {
+        Self {
+            rounds: HashMap::new(),
+        }
+    }
+
+    pub fn add_round<R>(&mut self, message_store: R) -> Round<R>
+    where
+        R: MessagesStore + 'static,
+        M: RoundMessage<R::Msg>,
+    {
         let overridden_round = self.rounds.insert(
             M::ROUND,
-            Some(Box::new(ProcessRoundMessageImpl {
-                store: Some(message_store),
-                channel: Some(tx),
-                _msg: PhantomType::new(),
+            Some(Box::new(ProcessRoundMessageImpl::InProgress {
+                store: message_store,
+                _ph: PhantomType::new(),
             })),
         );
         if overridden_round.is_some() {
             panic!("round {} is overridden", M::ROUND);
         }
-        self.not_completed_rounds = self.not_completed_rounds.checked_add(1).unwrap();
-        Round { channel: rx }
+        Round {
+            _ph: PhantomType::new(),
+        }
     }
 
-    /// Starts listening to incoming messages in the background
-    ///
-    /// Returns a handle that will abort background task on drop
-    pub fn start_in_background(self) -> RoundsHandle {
-        RoundsHandle(tokio::spawn(self.start()))
-    }
-
-    pub async fn start(mut self) {
-        let span = span!(Level::TRACE, "Rounds::listen");
-
-        while self.not_completed_rounds > 0 {
-            let msg = match self.incomings.try_next().await {
-                Ok(Some(msg)) => msg,
-                Ok(None) => return self.finish_with_io_error(&span, None),
-                Err(err) => return self.finish_with_io_error(&span, Some(err)),
-            };
-
-            let round = msg.msg.round();
-            let span = span!(
-                parent: &span,
-                Level::TRACE,
-                "Processing received message",
-                round,
-                sender = msg.sender,
-            );
-            event!(parent: &span, Level::TRACE, "Message received");
-
-            let round_processor = match self.rounds.get_mut(&round) {
-                Some(Some(p)) => p,
-                Some(None) => {
-                    event!(
-                        parent: &span,
-                        Level::WARN,
-                        "Message originates from round that's completed by now, ignoring it"
-                    );
-                    continue;
-                }
-                None => {
-                    event!(
-                        parent: &span,
-                        Level::WARN,
-                        "Message originates from round that's not registered, ignoring it"
-                    );
-                    continue;
-                }
-            };
-
-            match round_processor.process_message(msg) {
-                Ok(NeedsMoreMessages::Yes) => {
-                    event!(parent: &span, Level::TRACE, "Message is processed");
-                    continue;
-                }
-                Ok(NeedsMoreMessages::No) => {
-                    event!(parent: &span, Level::TRACE, "Message is processed");
-                    event!(parent: &span, Level::TRACE, "Round is completed");
-                    let _ = self.rounds.insert(round, None);
-                    self.not_completed_rounds -= 1;
-                    continue;
-                }
-                Err(err) => {
-                    event!(parent: &span, Level::ERROR, %err, "Failed to process the message");
-                    continue;
-                }
-            }
-        }
-
-        if self.not_completed_rounds > 0 {
-            return self.finish_with_io_error(&span, None);
-        }
-
-        event!(parent: &span, Level::TRACE, "Completed");
-    }
-
-    fn finish_with_io_error(&mut self, span: &tracing::Span, err: Option<S::Error>) {
-        if self.not_completed_rounds == 0 {
-            return;
-        }
-
-        // Find out what rounds are not completed
-        let not_completed_rounds = self
-            .rounds
-            .iter()
-            .filter_map(|(round, processor)| {
-                if processor.is_some() {
-                    Some(*round)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        // Log error
-        match &err {
-            Some(err) => {
-                event!(parent: span, Level::ERROR, %err, ?not_completed_rounds, "Stream of incoming messages yielded error");
-            }
-            None => {
-                event!(
-                    parent: span,
-                    Level::ERROR,
-                    ?not_completed_rounds,
-                    "Stream of incoming message is unexpectedly terminated"
-                );
-            }
-        }
-
-        // Propagate error to rounds
-        let err = err.map(Arc::new);
-
-        for round_processor in self.rounds.values_mut() {
-            if let Some(round_processor) = round_processor {
-                round_processor.receive_next_message_error(err.clone())
-            }
-            *round_processor = None
+    pub fn listen<S, E>(self, incomings: S) -> Rounds<M, S>
+    where
+        S: Stream<Item = Result<Incoming<M>, E>>,
+    {
+        Rounds {
+            incomings,
+            rounds: self.rounds,
         }
     }
 }
 
-/// Handle to [`Rounds`] working in background
-///
-/// Background task will be automatically canceled when handle is dropped
-pub struct RoundsHandle(tokio::task::JoinHandle<()>);
-
-impl RoundsHandle {
-    /// Aborts `Rounds` task working in background.
-    ///
-    /// Equivalent of dropping the handle.
-    ///
-    /// If any rounds are happened to be not completed at the time of calling this method, they will
-    /// terminate with error [`ReceiveMessageError::Aborted`]
-    pub fn abort(self) {}
-}
-
-impl Drop for RoundsHandle {
-    fn drop(&mut self) {
-        self.0.abort()
-    }
-}
-
-pub struct Round<R, StoreErr, IoErr> {
-    channel: oneshot::Receiver<Result<R, ReceiveMessageError<StoreErr, IoErr>>>,
-}
-
-impl<R, StoreErr, IoErr> Future for Round<R, StoreErr, IoErr> {
-    type Output = Result<R, ReceiveMessageError<StoreErr, IoErr>>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match ready!(Pin::new(&mut self.channel).poll(cx)) {
-            Ok(result) => Poll::Ready(result),
-            Err(_sender_is_gone) => Poll::Ready(Err(ReceiveMessageError::Aborted)),
-        }
-    }
+pub struct Round<S: MessagesStore> {
+    _ph: PhantomType<S>,
 }
 
 trait ProcessRoundMessage {
     type Msg;
-    type ReceiveError;
 
     /// Processes round message
     ///
+    /// Before calling this method you must ensure that `.needs_more_messages()` returns `Yes`,
+    /// otherwise calling this method is unexpected.
+    fn process_message(&mut self, msg: Incoming<Self::Msg>);
+
+    /// Indicated whether the store needs more messages
+    ///
+    /// If it returns `Yes`, then you need to collect more messages to complete round. If it's `No`
+    /// then you need to take the round output by calling `.take_output()`.
+    fn needs_more_messages(&self) -> NeedsMoreMessages;
+
+    /// Tries to obtain round output
+    ///
+    /// Can be called once `process_message()` returned `NeedMoreMessages::No`.
+    ///
     /// Returns:
-    /// * `Ok(NeedsMoreMessages::No)` — enough messages are received, no more messages are expected to come
-    /// * `Ok(NeedsMoreMessages::Yes)` — message is correctly handled, more messages are expected to come
-    /// * `Err(_)` — error happened, see [`ProcessRoundMessageError`]
-    ///
-    /// Once `process_message` returned `Ok(NeedsMoreMessages::No)` or `Err(_)`, round is considered
-    /// to be completed (or terminated with error).
-    fn process_message(
-        &mut self,
-        msg: Incoming<Self::Msg>,
-    ) -> Result<NeedsMoreMessages, ProcessRoundMessageError>;
-
-    /// Signals that round cannot be completed because of i/o error
-    ///
-    /// `err` is occurred error. `err` is `None` if unexpected eof is reached.
-    ///
-    /// Once this method is called, round is assumed to be terminated with i/o error.
-    fn receive_next_message_error(&mut self, err: Option<Self::ReceiveError>);
+    /// * `Ok(Ok(any))` — round is successfully completed, `any` needs to be downcasted to `MessageStore::Output`
+    /// * `Ok(Err(any))` — round has terminated with an error, `any` needs to be downcasted to `CompleteRoundError<MessageStore::Error>`
+    /// * `Err(err)` — couldn't retrieve the output, see [`TakeOutputError`]
+    fn take_output(&mut self) -> Result<Result<Box<dyn Any>, Box<dyn Any>>, TakeOutputError>;
 }
 
-struct ProcessRoundMessageImpl<S: MessagesStore, M: ProtocolMessage + RoundMessage<S::Msg>, IoErr> {
-    store: Option<S>,
-    channel: Option<oneshot::Sender<Result<S::Output, ReceiveMessageError<S::Error, IoErr>>>>,
-    _msg: PhantomType<M>,
+#[derive(Debug, Error)]
+enum TakeOutputError {
+    #[error("output is already taken")]
+    AlreadyTaken,
+    #[error("output is not ready yet, more messages are needed")]
+    NotReady,
 }
 
-impl<S, M, IoErr> ProcessRoundMessage for ProcessRoundMessageImpl<S, M, IoErr>
+enum ProcessRoundMessageImpl<S: MessagesStore, M: ProtocolMessage + RoundMessage<S::Msg>> {
+    InProgress { store: S, _ph: PhantomType<fn(M)> },
+    Completed(Result<S::Output, CompleteRoundError<S::Error, Never>>),
+    Gone,
+}
+
+impl<S, M> ProcessRoundMessageImpl<S, M>
 where
     S: MessagesStore,
     M: ProtocolMessage + RoundMessage<S::Msg>,
 {
-    type Msg = M;
-    type ReceiveError = Arc<IoErr>;
-
-    fn process_message(
-        &mut self,
-        msg: Incoming<Self::Msg>,
-    ) -> Result<NeedsMoreMessages, ProcessRoundMessageError> {
-        if self.channel.is_none() || self.store.is_none() {
-            return Err(ProcessRoundMessageError::Gone);
-        }
-
+    fn _process_message(
+        store: &mut S,
+        msg: Incoming<M>,
+    ) -> Result<(), CompleteRoundError<S::Error, Never>> {
         let msg = Incoming {
             sender: msg.sender,
             msg: M::from_protocol_message(msg.msg).map_err(|msg| {
-                ProcessRoundMessageError::MismatchedRoundNumber {
-                    round: msg.round(),
+                BugReason::MessageFromAnotherRound {
+                    actual_number: msg.round(),
                     expected_round: M::ROUND,
                 }
             })?,
         };
 
-        let store = self.store.as_mut().expect("store is checked to be present");
-        if let Err(err) = store.add_message(msg) {
-            let _ = self
-                .channel
-                .take()
-                .expect("channel is checked to be present")
-                .send(Err(ReceiveMessageError::ProcessMessageError(err)));
-            return Err(ProcessRoundMessageError::InvalidMessage);
-        }
+        store
+            .add_message(msg)
+            .map_err(CompleteRoundError::ProcessMessage)?;
+        Ok(())
+    }
+}
 
-        if !store.wants_more() {
-            let output = self
-                .store
-                .take()
-                .expect("store is checked to be present")
-                .output()
-                .or(Err(ProcessRoundMessageError::StoreDidntOutput))?;
-            let _ = self
-                .channel
-                .take()
-                .expect("channel is checked to be present")
-                .send(Ok(output));
-            return Ok(NeedsMoreMessages::No);
-        }
+impl<S, M> ProcessRoundMessage for ProcessRoundMessageImpl<S, M>
+where
+    S: MessagesStore,
+    M: ProtocolMessage + RoundMessage<S::Msg>,
+{
+    type Msg = M;
 
-        Ok(NeedsMoreMessages::Yes)
+    fn process_message(&mut self, msg: Incoming<Self::Msg>) {
+        let store = match self {
+            Self::InProgress { store, .. } => store,
+            _ => {
+                return;
+            }
+        };
+
+        match Self::_process_message(store, msg) {
+            Ok(()) => {
+                if store.wants_more() {
+                    return;
+                }
+
+                let store = match mem::replace(self, Self::Gone) {
+                    Self::InProgress { store, .. } => store,
+                    _ => {
+                        *self = Self::Completed(Err(BugReason::IncoherentState {
+                            expected: "InProgress",
+                            justification:
+                                "we checked at beginning of the function that `state` is InProgress",
+                        }
+                        .into()));
+                        return;
+                    }
+                };
+
+                match store.output() {
+                    Ok(output) => *self = Self::Completed(Ok(output)),
+                    Err(_err) => *self = Self::Completed(Err(CompleteRoundError::StoreDidntOutput)),
+                }
+            }
+            Err(err) => {
+                *self = Self::Completed(Err(err));
+            }
+        }
     }
 
-    fn receive_next_message_error(&mut self, err: Option<Self::ReceiveError>) {
-        if let Some(channel) = self.channel.take() {
-            let _ = channel.send(Err(err
-                .map(ReceiveMessageError::ReceiveMessageError)
-                .unwrap_or(ReceiveMessageError::UnexpectedEof)));
+    fn needs_more_messages(&self) -> NeedsMoreMessages {
+        match self {
+            Self::InProgress { .. } => NeedsMoreMessages::Yes,
+            _ => NeedsMoreMessages::No,
+        }
+    }
+
+    fn take_output(&mut self) -> Result<Result<Box<dyn Any>, Box<dyn Any>>, TakeOutputError> {
+        match self {
+            Self::InProgress { .. } => return Err(TakeOutputError::NotReady),
+            Self::Gone => return Err(TakeOutputError::AlreadyTaken),
+            _ => (),
+        }
+        match mem::replace(self, Self::Gone) {
+            Self::Completed(Ok(output)) => Ok(Ok(Box::new(output))),
+            Self::Completed(Err(err)) => Ok(Err(Box::new(err))),
+            _ => unreachable!("it's checked to be completed"),
         }
     }
 }
@@ -319,35 +349,88 @@ enum NeedsMoreMessages {
     No,
 }
 
+#[allow(dead_code)]
+impl NeedsMoreMessages {
+    pub fn yes(&self) -> bool {
+        matches!(self, Self::Yes)
+    }
+    pub fn no(&self) -> bool {
+        matches!(self, Self::No)
+    }
+}
+
 #[derive(Debug, Error)]
-enum ProcessRoundMessageError {
-    /// Received message is invalid
-    #[error("received message is invalid")]
-    InvalidMessage,
-    /// `process_message` previously returned either `Ok(NeedsMoreMessages::No)` or `Err(_)`
-    #[error("gone")]
-    Gone,
-    /// Message originates from another round.
-    ///
-    /// Practically it means there's a bug in [`Rounds`] implementation.
-    #[error("message originates from another round (message round is {round}, expected {expected_round})")]
-    MismatchedRoundNumber { round: u16, expected_round: u16 },
-    /// Store indicated that it needs no more messages but didn't output
+pub enum CompleteRoundError<ProcessErr, IoErr> {
+    /// [`MessageStore`] failed to process this message
+    #[error("failed to process the message")]
+    ProcessMessage(#[source] ProcessErr),
+    /// Store indicated that it received enough messages but didn't output
     ///
     /// I.e. [`store.wants_more()`] returned `false`, but `store.output()` returned `Err(_)`.
     /// Practically it means that there's a bug in [`MessageStore`] implementation.
     #[error("store didn't output")]
     StoreDidntOutput,
+    #[error("round is already completed")]
+    RoundAlreadyCompleted,
+    #[error("receiving next message resulted into error")]
+    Io(#[source] IoErr),
+    #[error("receiving next message failed: unexpected eof")]
+    UnexpectedEof,
+    #[error("round {n} is not registered")]
+    UnregisteredRound { n: u16 },
+    /// Indicates a bug in [`Rounds`] implementation
+    #[error("bug occurred")]
+    Bug(#[source] CompleteRoundBug),
+}
+
+impl<ProcessErr, IoErr> CompleteRoundError<ProcessErr, IoErr> {
+    fn map_io_err<E, F>(self, f: F) -> CompleteRoundError<ProcessErr, E>
+    where
+        F: FnOnce(IoErr) -> E,
+    {
+        match self {
+            CompleteRoundError::Io(err) => CompleteRoundError::Io(f(err)),
+            CompleteRoundError::ProcessMessage(err) => CompleteRoundError::ProcessMessage(err),
+            CompleteRoundError::StoreDidntOutput => CompleteRoundError::StoreDidntOutput,
+            CompleteRoundError::RoundAlreadyCompleted => CompleteRoundError::RoundAlreadyCompleted,
+            CompleteRoundError::UnexpectedEof => CompleteRoundError::UnexpectedEof,
+            CompleteRoundError::Bug(err) => CompleteRoundError::Bug(err),
+            CompleteRoundError::UnregisteredRound { n } => {
+                CompleteRoundError::UnregisteredRound { n }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Error)]
-pub enum ReceiveMessageError<StoreErr, IoErr> {
-    #[error("processing received message resulted into error")]
-    ProcessMessageError(#[source] StoreErr),
-    #[error("receiving next incoming message resulted into error")]
-    ReceiveMessageError(#[source] Arc<IoErr>),
-    #[error("unexpected eof")]
-    UnexpectedEof,
-    #[error("task receiving messages was aborted")]
-    Aborted,
+#[error(transparent)]
+pub struct CompleteRoundBug(BugReason);
+
+#[derive(Debug, Error)]
+enum BugReason {
+    #[error(
+        "message originates from another round: we process messages from round \
+        {expected_round}, got message from round {actual_number}"
+    )]
+    MessageFromAnotherRound {
+        expected_round: u16,
+        actual_number: u16,
+    },
+    #[error("state is incoherent, it's expected to be {expected}: {justification}")]
+    IncoherentState {
+        expected: &'static str,
+        justification: &'static str,
+    },
+    #[error("mismatched output type")]
+    MismatchedOutputType,
+    #[error("mismatched error type")]
+    MismatchedErrorType,
+    #[error("take round result")]
+    TakeRoundResult(#[source] TakeOutputError),
+}
+
+impl<E1, E2> From<BugReason> for CompleteRoundError<E1, E2> {
+    fn from(err: BugReason) -> Self {
+        CompleteRoundError::Bug(CompleteRoundBug(err))
+    }
 }

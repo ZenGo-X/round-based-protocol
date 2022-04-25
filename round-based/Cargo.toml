@@ -25,11 +25,9 @@ async-stream = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 round-based-derive = { path = "../round-based-derive", optional = true }
 thiserror = "1"
+never = "0.1"
 
 delivery-core = { path = "../delivery/core" }
-two-party-delivery = { path = "../delivery/two-party", optional = true }
-trusted-delivery-client = { package = "trusted-delivery", path = "../delivery/trusted-delivery/client", optional = true }
-trusted-delivery-core = { path = "../delivery/trusted-delivery/core", optional = true }
 
 [dev-dependencies]
 rand = "0.8"
@@ -45,10 +43,10 @@ matches = "0.1"
 
 [features]
 default = []
-two-party = ["two-party-delivery"]
-two-party-insecure = ["two-party", "two-party-delivery/insecure"]
+#two-party = ["two-party-delivery"]
+#two-party-insecure = ["two-party", "two-party-delivery/insecure"]
 mock-tls = ["delivery-core/mock-tls"]
-trusted-delivery = ["trusted-delivery-client", "trusted-delivery-core"]
+#trusted-delivery = ["trusted-delivery-client", "trusted-delivery-core"]
 derive = ["round-based-derive"]
 
 [[test]]

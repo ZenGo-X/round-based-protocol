@@ -3,7 +3,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{digest::Output, Digest, Sha256};
 
-use round_based::rounds::{Error as StoreError, ReceiveMessageError, RoundInput, Rounds};
+use round_based::rounds::{CompleteRoundError, Error as StoreError, RoundInput, Rounds};
 use round_based::{Delivery, Mpc, MpcParty, Outgoing, ProtocolMessage};
 
 #[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]
@@ -36,10 +36,10 @@ where
     let (incoming, mut outgoing) = delivery.split();
 
     // Define rounds
-    let mut rounds = Rounds::listen(incoming);
+    let mut rounds = Rounds::<Msg>::builder();
     let round1 = rounds.add_round(RoundInput::<CommitMsg>::new(i, n));
     let round2 = rounds.add_round(RoundInput::<DecommitMsg>::new(i, n));
-    let _handle = rounds.start_in_background();
+    let mut rounds = rounds.listen(incoming);
 
     // --- The Protocol ---
 
@@ -58,7 +58,8 @@ where
         .map_err(Error::Round1Send)?;
 
     // 3. Receive committed randomness from other parties
-    let commitments = round1
+    let commitments = rounds
+        .complete(round1)
         .await
         .map_err(Error::Round1Receive)?
         .into_vec_including_me(CommitMsg { commitment });
@@ -75,7 +76,8 @@ where
         .map_err(Error::Round2Send)?;
 
     // 5. Receive opened local randomness from other parties, verify them, and output protocol randomness
-    let randomness = round2
+    let randomness = rounds
+        .complete(round2)
         .await
         .map_err(Error::Round2Receive)?
         .into_vec_including_me(DecommitMsg {
@@ -108,12 +110,12 @@ where
 pub enum Error<RecvErr, SendErr> {
     #[error("send a message at round 1")]
     Round1Send(#[source] SendErr),
-    #[error("receive a message at round 1")]
-    Round1Receive(#[source] ReceiveMessageError<StoreError, RecvErr>),
+    #[error("receive messages at round 1")]
+    Round1Receive(#[source] CompleteRoundError<StoreError, RecvErr>),
     #[error("send a message at round 2")]
     Round2Send(#[source] SendErr),
-    #[error("receive a message at round 2")]
-    Round2Receive(#[source] ReceiveMessageError<StoreError, RecvErr>),
+    #[error("receive messages at round 2")]
+    Round2Receive(#[source] CompleteRoundError<StoreError, RecvErr>),
 
     #[error("malicious parties: {guilty_parties:?}")]
     PartiesOpenedRandomnessDoesntMatchCommitment { guilty_parties: Vec<u16> },
