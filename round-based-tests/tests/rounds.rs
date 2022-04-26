@@ -8,7 +8,7 @@ use rand::SeedableRng;
 use random_generation_protocol::{
     protocol_of_random_generation, CommitMsg, DecommitMsg, Error, Msg,
 };
-use round_based::rounds::{CompleteRoundError, RoundInput, Rounds};
+use round_based::rounds::{store::RoundInput, CompleteRoundError, Rounds};
 use round_based::{Delivery, Incoming, MpcParty, Outgoing};
 
 const PARTY0_SEED: [u8; 32] =

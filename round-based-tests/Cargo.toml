@@ -22,5 +22,5 @@ matches = "0.1"
 thiserror = "1"
 url = "2.2"
 
-round-based = { path = "../round-based", features = ["mock-tls"] }
+round-based = { path = "../round-based" }
 random-generation-protocol = { path = "../examples/random-generation-protocol" }

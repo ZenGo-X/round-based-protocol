@@ -358,32 +358,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "delivery-core"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "futures",
- "matches",
- "rcgen",
- "round-based-derive",
- "rustls",
- "serde",
- "serde_json",
- "thiserror",
- "tokio 1.16.1",
- "tokio-rustls",
-]
-
-[[package]]
-name = "delivery-utils"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "digest"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1506,7 +1480,6 @@ version = "0.2.0"
 dependencies = [
  "async-stream",
  "bincode",
- "delivery-core",
  "futures",
  "hamcrest2",
  "hex 0.4.3",

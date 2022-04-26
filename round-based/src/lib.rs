@@ -10,7 +10,7 @@ pub mod simulation;
 pub use self::{
     delivery::{Delivery, Incoming, Outgoing},
     party::{Mpc, MpcParty},
-    rounds::{ProtocolMessage, RoundMessage},
+    rounds::store::{ProtocolMessage, RoundMessage},
 };
 
 #[cfg(feature = "derive")]

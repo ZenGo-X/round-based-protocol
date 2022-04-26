@@ -3,16 +3,18 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::mem;
 
-use delivery_core::Incoming;
 use futures::{Stream, StreamExt};
 use never::Never;
 use phantom_type::PhantomType;
 use thiserror::Error;
 use tracing::{debug, error, trace, trace_span, warn, Span};
 
-use crate::rounds::MessagesStore;
+use crate::Incoming;
 
-pub use delivery_core::round_store::*;
+use self::store::MessagesStore;
+use super::{ProtocolMessage, RoundMessage};
+
+pub mod store;
 
 pub struct Rounds<M, S = ()> {
     incomings: S,
