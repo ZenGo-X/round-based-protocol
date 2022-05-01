@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use std::{fmt, ops};
 
+pub use ecdsa_mpc::algorithms::zkp::ZkpSetup;
 pub use ecdsa_mpc::ecdsa::keygen::Message as KeygenMsg;
 pub use ecdsa_mpc::ecdsa::signature::Message as SigningMsg;
 
 use curv_kzen::elliptic::curves::secp256_k1::FE as InitialSecret;
 use curv_kzen::elliptic::curves::traits::{ECPoint, ECScalar};
-use ecdsa_mpc::algorithms::zkp::ZkpSetup;
 use ecdsa_mpc::ecdsa::keygen::{
     self, DecryptionKey, MultiPartyInfo, SecretKeyLoader, SecretKeyLoaderError,
 };
