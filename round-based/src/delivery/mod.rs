@@ -17,13 +17,13 @@ use futures::{Sink, Stream};
 /// A pair of incoming and outgoing delivery channels
 pub trait Delivery<M> {
     /// Outgoing delivery channel
-    type Send: Sink<Outgoing<M>, Error = Self::SendError> + Send + Unpin;
+    type Send: Sink<Outgoing<M>, Error = Self::SendError> + Unpin;
     /// Incoming delivery channel
-    type Receive: Stream<Item = Result<Incoming<M>, Self::ReceiveError>> + Send + Unpin + 'static;
+    type Receive: Stream<Item = Result<Incoming<M>, Self::ReceiveError>> + Unpin;
     /// Error of outgoing delivery channel
     type SendError: Error;
     /// Error of incoming delivery channel
-    type ReceiveError: Error + Send + 'static;
+    type ReceiveError: Error;
     /// Returns a pair of incoming and outgoing delivery channels
     fn split(self) -> (Self::Receive, Self::Send);
 }

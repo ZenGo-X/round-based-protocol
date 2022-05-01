@@ -6,7 +6,7 @@ use crate::blocking::{Blocking, SpawnBlocking, TokioSpawnBlocking};
 use crate::delivery::Delivery;
 
 pub trait Mpc: internal::Sealed {
-    type ProtocolMessage: Send + 'static;
+    type ProtocolMessage;
     type Delivery: Delivery<
         Self::ProtocolMessage,
         SendError = Self::SendError,
@@ -15,7 +15,7 @@ pub trait Mpc: internal::Sealed {
     type SpawnBlocking: SpawnBlocking;
 
     type SendError: Error;
-    type ReceiveError: Error + Send + Sync + Unpin + 'static;
+    type ReceiveError: Error;
 
     fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::SpawnBlocking>;
 }
@@ -73,10 +73,9 @@ impl<M, D, B> internal::Sealed for MpcParty<M, D, B> {}
 
 impl<M, D, B> Mpc for MpcParty<M, D, B>
 where
-    M: Send + 'static,
     D: Delivery<M>,
     D::SendError: Error,
-    D::ReceiveError: Error + Send + Sync + Unpin + 'static,
+    D::ReceiveError: Error,
     B: SpawnBlocking,
 {
     type ProtocolMessage = M;
