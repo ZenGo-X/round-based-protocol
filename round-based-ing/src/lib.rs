@@ -57,7 +57,7 @@ impl Keygen {
     pub fn new(i: u16, min_signers: u16, n: u16) -> Result<Self, InvalidKeygenParameters> {
         if n < 2 {
             Err(InvalidKeygenParameters::TooFewParties { n })
-        } else if !(0 < min_signers && min_signers <= n) {
+        } else if !(1 < min_signers && min_signers <= n) {
             Err(InvalidKeygenParameters::IncorrectThreshold { min_signers, n })
         } else if i >= n {
             Err(InvalidKeygenParameters::IncorrectPartyIndex { i, n })
@@ -256,7 +256,7 @@ pub enum InvalidKeygenParameters {
     #[error("too small number of parties n={n} (required at least 2)")]
     TooFewParties { n: u16 },
     #[error(
-        "incorrect threshold min_signers={min_signers}: must be positive, less or equal to n={n}"
+        "incorrect threshold: must be 1 < min_signers <= n (min_signers={min_signers}, n={n})"
     )]
     IncorrectThreshold { min_signers: u16, n: u16 },
     #[error("index of local party i={i} should be less than number of parties n={n}")]
