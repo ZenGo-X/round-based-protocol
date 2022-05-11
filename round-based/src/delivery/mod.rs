@@ -1,20 +1,11 @@
-//! # Messages delivery
-//!
-//! In this module we provide traits determining a way of exchanging messages between parties. Prior to
-//! carrying out any protocol, you typically need to obtain an instance of [`Delivery`] trait, basically
-//! it's a pair of delivery channels of incoming and outgoing messages.
-//!
-//! Receiving channel (or channel of incoming messages) is a [`Stream`], quite popular asynchronous
-//! abstraction. Sending channel (or channel of outgoing messages) is defined with [`Sink`]
-//! trait.
-//!
-//! We provide several delivery implementations for most common cases. See [two_party] module.
-
 use std::error::Error;
 
 use futures::{Sink, Stream};
 
-/// A pair of incoming and outgoing delivery channels
+/// Networking abstraction
+///
+/// Basically, it's pair of channels: [`Stream`] for receiving messages, and [`Sink`] for sending
+/// messages to other parties.
 pub trait Delivery<M> {
     /// Outgoing delivery channel
     type Send: Sink<Outgoing<M>, Error = Self::SendError> + Unpin;

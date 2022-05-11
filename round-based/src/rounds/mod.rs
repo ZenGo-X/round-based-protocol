@@ -363,13 +363,13 @@ impl NeedsMoreMessages {
 
 #[derive(Debug, Error)]
 pub enum CompleteRoundError<ProcessErr, IoErr> {
-    /// [`MessageStore`] failed to process this message
+    /// [`MessagesStore`] failed to process this message
     #[error("failed to process the message")]
     ProcessMessage(#[source] ProcessErr),
     /// Store indicated that it received enough messages but didn't output
     ///
     /// I.e. [`store.wants_more()`] returned `false`, but `store.output()` returned `Err(_)`.
-    /// Practically it means that there's a bug in [`MessageStore`] implementation.
+    /// Practically it means that there's a bug in [`MessagesStore`] implementation.
     #[error("store didn't output")]
     StoreDidntOutput,
     #[error("round is already completed")]
