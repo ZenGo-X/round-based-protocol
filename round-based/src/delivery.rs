@@ -31,6 +31,7 @@ pub struct Incoming<M> {
 }
 
 impl<M> Incoming<M> {
+    /// Maps `Incoming<M>` to `Incoming<M2>` by applying a function to the message body
     pub fn map<M2, F>(self, f: F) -> Incoming<M2>
     where
         F: FnOnce(M) -> M2,
@@ -41,6 +42,7 @@ impl<M> Incoming<M> {
         }
     }
 
+    /// Converts `&Incoming<M>` to `Incoming<&M>`
     pub fn as_ref(&self) -> Incoming<&M> {
         Incoming {
             sender: self.sender,
@@ -50,20 +52,16 @@ impl<M> Incoming<M> {
 }
 
 /// Outgoing message
-///
-/// Contains a message that local party needs to send, and index of recipient party (`None` if it's
-/// broadcast message)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Outgoing<M> {
-    /// Index of recipient
-    ///
-    /// `None` if the message is meant to be received by all the parties (ie. it's broadcast message)
-    pub recipient: Option<u16>,
+    /// Message destination: either one party (p2p message) or all parties (broadcast message)
+    pub recipient: MessageDestination,
     /// Message being sent
     pub msg: M,
 }
 
 impl<M> Outgoing<M> {
+    /// Maps `Outgoing<M>` to `Outgoing<M2>` by applying a function to the message body
     pub fn map<M2, F>(self, f: F) -> Outgoing<M2>
     where
         F: FnOnce(M) -> M2,
@@ -74,10 +72,31 @@ impl<M> Outgoing<M> {
         }
     }
 
+    /// Converts `&Outgoing<M>` to `Outgoing<&M>`
     pub fn as_ref(&self) -> Outgoing<&M> {
         Outgoing {
             recipient: self.recipient,
             msg: &self.msg,
         }
+    }
+}
+
+/// Destination of an outgoing message
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum MessageDestination {
+    /// Broadcast message
+    AllParties,
+    /// P2P message
+    OneParty(u16),
+}
+
+impl MessageDestination {
+    /// Returns `true` if it's p2p message
+    pub fn is_p2p(&self) -> bool {
+        matches!(self, MessageDestination::OneParty(_))
+    }
+    /// Returns `true` if it's broadcast message
+    pub fn is_broadcast(&self) -> bool {
+        matches!(self, MessageDestination::AllParties)
     }
 }

@@ -1,4 +1,4 @@
-use round_based::{Delivery, Incoming, Mpc, MpcParty, Outgoing};
+use round_based::{Delivery, Incoming, MessageDestination, Mpc, MpcParty, Outgoing};
 
 use ecdsa_mpc::protocol::{Address, InputMessage, OutputMessage, PartyIndex};
 use ecdsa_mpc::state_machine::{self, State, Transition};
@@ -77,9 +77,9 @@ fn convert_output_message_to_outgoing<M>(
             let index = parties
                 .find(&index)
                 .ok_or(UnknownDestination { recipient: index })?;
-            Some(index)
+            MessageDestination::OneParty(index)
         }
-        Address::Broadcast => None,
+        Address::Broadcast => MessageDestination::AllParties,
     };
 
     Ok(Outgoing {

@@ -6,7 +6,7 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
 use crate::delivery::{Delivery, Incoming, Outgoing};
-use crate::MpcParty;
+use crate::{MessageDestination, MpcParty};
 
 pub struct Simulation<M> {
     channel: broadcast::Sender<Outgoing<Incoming<M>>>,
@@ -110,7 +110,9 @@ where
                 Some(Err(e)) => return Poll::Ready(Some(Err(e))),
                 None => return Poll::Ready(None),
             };
-            if msg.recipient.is_some() && msg.recipient != Some(self.local_party_idx) {
+            if msg.recipient.is_p2p()
+                && msg.recipient != MessageDestination::OneParty(self.local_party_idx)
+            {
                 continue;
             }
             return Poll::Ready(Some(Ok(msg.msg)));

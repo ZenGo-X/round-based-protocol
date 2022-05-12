@@ -7,7 +7,7 @@ use round_based::rounds::{
     store::{Error as StoreError, RoundInput},
     CompleteRoundError, Rounds,
 };
-use round_based::{Delivery, Mpc, MpcParty, Outgoing, ProtocolMessage};
+use round_based::{Delivery, MessageDestination, Mpc, MpcParty, Outgoing, ProtocolMessage};
 
 #[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]
 pub enum Msg {
@@ -54,7 +54,7 @@ where
     let commitment = Sha256::digest(&local_randomness);
     outgoing
         .send(Outgoing {
-            recipient: None,
+            recipient: MessageDestination::AllParties,
             msg: Msg::CommitMsg(CommitMsg { commitment }),
         })
         .await
@@ -70,7 +70,7 @@ where
     // 4. Open local randomness
     outgoing
         .send(Outgoing {
-            recipient: None,
+            recipient: MessageDestination::AllParties,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: local_randomness,
             }),
