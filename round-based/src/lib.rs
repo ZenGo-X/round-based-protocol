@@ -52,6 +52,9 @@ pub mod blocking;
 mod delivery;
 pub mod party;
 pub mod rounds;
+
+#[cfg(feature = "dev")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dev")))]
 pub mod simulation;
 
 pub use self::delivery::*;
@@ -62,4 +65,5 @@ pub use self::{
 };
 
 #[cfg(feature = "derive")]
+#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use round_based_derive::ProtocolMessage;
