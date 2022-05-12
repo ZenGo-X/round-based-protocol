@@ -1,3 +1,8 @@
+//! Incoming messages processing
+//!
+//! [`Rounds`] is an essential building block of MPC protocol, it processes incoming messages, groups
+//! them by rounds, and provides convenient API for retrieving received messages at certain round.
+
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::Debug;

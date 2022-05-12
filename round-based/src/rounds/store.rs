@@ -191,7 +191,10 @@ pub trait RoundMessage<M>: ProtocolMessage {
 /// input.add_message(Incoming{ sender: 0, msg: "first party message" })?;
 /// input.add_message(Incoming{ sender: 2, msg: "third party message" })?;
 /// assert!(!input.wants_more());
-/// assert_eq!(input.output().unwrap().into_vec(), ["first party message", "third party message"]);
+///
+/// let output = input.output().unwrap();
+/// assert_eq!(output.clone().into_vec_without_me(), ["first party message", "third party message"]);
+/// assert_eq!(output.clone().into_vec_including_me("my msg"), ["first party message", "my msg", "third party message"]);
 /// # Ok(()) }
 /// ```
 #[derive(Debug, Clone)]
@@ -340,7 +343,7 @@ mod tests {
 
         // without me
         let msgs: Vec<_> = msgs.into_iter().map(|msg| msg.msg).collect();
-        assert_eq!(received.clone().into_vec(), msgs);
+        assert_eq!(received.clone().into_vec_without_me(), msgs);
 
         // including me
         let received = received.into_vec_including_me(Msg(13));
@@ -387,7 +390,7 @@ mod tests {
             })
             .unwrap();
 
-        let output = store.output().unwrap().into_vec();
+        let output = store.output().unwrap().into_vec_without_me();
         assert_eq!(output, [Msg(11), Msg(22)]);
     }
 
