@@ -1,7 +1,7 @@
 use std::iter;
 use thiserror::Error;
 
-use crate::Incoming;
+use crate::{Incoming, MessageType};
 
 /// Stores messages received at particular round
 ///
@@ -185,11 +185,11 @@ pub trait RoundMessage<M>: ProtocolMessage {
 /// ## Example
 /// ```rust
 /// # use round_based::rounds::store::{MessagesStore, RoundInput};
-/// # use round_based::Incoming;
+/// # use round_based::{Incoming, MessageType};
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let mut input = RoundInput::<&'static str>::new(1, 3);
-/// input.add_message(Incoming{ sender: 0, msg: "first party message" })?;
-/// input.add_message(Incoming{ sender: 2, msg: "third party message" })?;
+/// let mut input = RoundInput::<&'static str>::new(1, 3, MessageType::Broadcast);
+/// input.add_message(Incoming{ sender: 0, msg: "first party message", msg_type: MessageType::Broadcast })?;
+/// input.add_message(Incoming{ sender: 2, msg: "third party message", msg_type: MessageType::Broadcast })?;
 /// assert!(!input.wants_more());
 ///
 /// let output = input.output().unwrap();
@@ -203,6 +203,7 @@ pub struct RoundInput<M> {
     n: u16,
     messages: Vec<Option<M>>,
     left_messages: u16,
+    expected_msg_type: MessageType,
 }
 
 #[derive(Debug, Clone)]
@@ -218,7 +219,7 @@ impl<M> RoundInput<M> {
     ///
     /// ## Panics
     /// Panics if `n` is less than 2 or `i` is not in the range `[0; n)`.
-    pub fn new(i: u16, n: u16) -> Self {
+    pub fn new(i: u16, n: u16, msg_type: MessageType) -> Self {
         assert!(n >= 2);
         assert!(i < n);
 
@@ -229,6 +230,7 @@ impl<M> RoundInput<M> {
                 .take(usize::from(n) - 1)
                 .collect(),
             left_messages: n - 1,
+            expected_msg_type: msg_type,
         }
     }
 }
@@ -242,6 +244,13 @@ where
     type Error = Error;
 
     fn add_message(&mut self, msg: Incoming<Self::Msg>) -> Result<(), Self::Error> {
+        if msg.msg_type != self.expected_msg_type {
+            return Err(Reason::MismatchedMessageType {
+                expected: self.expected_msg_type,
+                actual: msg.msg_type,
+            }
+            .into());
+        }
         if msg.sender == self.i {
             // Ignore own messages
             return Ok(());
@@ -307,6 +316,11 @@ enum Reason {
     AttemptToOverwriteReceivedMsg { sender: u16 },
     #[error("sender index is out of range: sender={sender}, n={n}")]
     SenderIndexOutOfRange { sender: u16, n: u16 },
+    #[error("expected message {expected:?}, got {actual:?}")]
+    MismatchedMessageType {
+        expected: MessageType,
+        actual: MessageType,
+    },
 }
 
 #[cfg(test)]
@@ -314,7 +328,7 @@ mod tests {
     use matches::assert_matches;
 
     use crate::rounds::store::MessagesStore;
-    use crate::Incoming;
+    use crate::{Incoming, MessageType};
 
     use super::{Error, Reason, RoundInput};
 
@@ -323,11 +337,12 @@ mod tests {
 
     #[test]
     fn store_outputs_received_messages() {
-        let mut store = RoundInput::<Msg>::new(3, 5);
+        let mut store = RoundInput::<Msg>::new(3, 5, MessageType::P2P);
 
         let msgs = (0..5)
             .map(|s| Incoming {
                 sender: s,
+                msg_type: MessageType::P2P,
                 msg: Msg(10 + s),
             })
             .filter(|incoming| incoming.sender != 3)
@@ -354,10 +369,11 @@ mod tests {
 
     #[test]
     fn store_returns_error_if_sender_index_is_out_of_range() {
-        let mut store = RoundInput::new(3, 5);
+        let mut store = RoundInput::new(3, 5, MessageType::P2P);
         let error = store
             .add_message(Incoming {
                 sender: 5,
+                msg_type: MessageType::P2P,
                 msg: Msg(123),
             })
             .unwrap_err();
@@ -369,16 +385,18 @@ mod tests {
 
     #[test]
     fn store_returns_error_if_incoming_msg_overwrites_already_received_one() {
-        let mut store = RoundInput::new(0, 3);
+        let mut store = RoundInput::new(0, 3, MessageType::P2P);
         store
             .add_message(Incoming {
                 sender: 1,
+                msg_type: MessageType::P2P,
                 msg: Msg(11),
             })
             .unwrap();
         let error = store
             .add_message(Incoming {
                 sender: 1,
+                msg_type: MessageType::P2P,
                 msg: Msg(112),
             })
             .unwrap_err();
@@ -386,6 +404,7 @@ mod tests {
         store
             .add_message(Incoming {
                 sender: 2,
+                msg_type: MessageType::P2P,
                 msg: Msg(22),
             })
             .unwrap();
@@ -396,11 +415,12 @@ mod tests {
 
     #[test]
     fn store_returns_error_if_tried_to_output_before_receiving_enough_messages() {
-        let mut store = RoundInput::<Msg>::new(3, 5);
+        let mut store = RoundInput::<Msg>::new(3, 5, MessageType::P2P);
 
         let msgs = (0..5)
             .map(|s| Incoming {
                 sender: s,
+                msg_type: MessageType::P2P,
                 msg: Msg(10 + s),
             })
             .filter(|incoming| incoming.sender != 3);
@@ -413,5 +433,25 @@ mod tests {
         }
 
         let _ = store.output().unwrap();
+    }
+
+    #[test]
+    fn store_returns_error_if_message_type_mismatched() {
+        let mut store = RoundInput::<Msg>::new(3, 5, MessageType::P2P);
+
+        let err = store
+            .add_message(Incoming {
+                sender: 0,
+                msg_type: MessageType::Broadcast,
+                msg: Msg(1),
+            })
+            .unwrap_err();
+        assert_matches!(
+            err,
+            Error(Reason::MismatchedMessageType {
+                expected: MessageType::P2P,
+                actual: MessageType::Broadcast
+            })
+        );
     }
 }

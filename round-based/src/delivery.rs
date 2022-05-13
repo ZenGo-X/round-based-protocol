@@ -20,34 +20,67 @@ pub trait Delivery<M> {
 }
 
 /// Incoming message
-///
-/// Contains a received message and index of party who sent the message
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Incoming<M> {
     /// Index of a party who sent the message
     pub sender: u16,
+    /// Indicates whether it's a broadcast message (meaning that this message is received by all the
+    /// parties), or p2p (private message sent by `sender`)
+    pub msg_type: MessageType,
     /// Received message
     pub msg: M,
 }
 
+/// Message type (broadcast or p2p)
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum MessageType {
+    Broadcast,
+    P2P,
+}
+
 impl<M> Incoming<M> {
-    /// Maps `Incoming<M>` to `Incoming<M2>` by applying a function to the message body
-    pub fn map<M2, F>(self, f: F) -> Incoming<M2>
+    /// Maps `Incoming<M>` to `Incoming<T>` by applying a function to the message body
+    pub fn map<T, F>(self, f: F) -> Incoming<T>
     where
-        F: FnOnce(M) -> M2,
+        F: FnOnce(M) -> T,
     {
         Incoming {
             sender: self.sender,
+            msg_type: self.msg_type,
             msg: f(self.msg),
         }
+    }
+
+    /// Maps `Incoming<M>` to `Result<Incoming<T>, E>` by applying a function `fn(M) -> Result<T, E>`
+    /// to the message body
+    pub fn try_map<T, E, F>(self, f: F) -> Result<Incoming<T>, E>
+    where
+        F: FnOnce(M) -> Result<T, E>,
+    {
+        Ok(Incoming {
+            sender: self.sender,
+            msg_type: self.msg_type,
+            msg: f(self.msg)?,
+        })
     }
 
     /// Converts `&Incoming<M>` to `Incoming<&M>`
     pub fn as_ref(&self) -> Incoming<&M> {
         Incoming {
             sender: self.sender,
+            msg_type: self.msg_type,
             msg: &self.msg,
         }
+    }
+
+    /// Checks whether it's broadcast message
+    pub fn is_broadcast(&self) -> bool {
+        matches!(self.msg_type, MessageType::Broadcast)
+    }
+
+    /// Checks whether it's p2p message
+    pub fn is_p2p(&self) -> bool {
+        matches!(self.msg_type, MessageType::P2P)
     }
 }
 
@@ -78,6 +111,16 @@ impl<M> Outgoing<M> {
             recipient: self.recipient,
             msg: &self.msg,
         }
+    }
+
+    /// Checks whether it's broadcast message
+    pub fn is_broadcast(&self) -> bool {
+        matches!(self.recipient, MessageDestination::AllParties)
+    }
+
+    /// Checks whether it's p2p message
+    pub fn is_p2p(&self) -> bool {
+        matches!(self.recipient, MessageDestination::OneParty(_))
     }
 }
 

@@ -7,7 +7,9 @@ use round_based::rounds::{
     store::{Error as StoreError, RoundInput},
     CompleteRoundError, Rounds,
 };
-use round_based::{Delivery, MessageDestination, Mpc, MpcParty, Outgoing, ProtocolMessage};
+use round_based::{
+    Delivery, MessageDestination, MessageType, Mpc, MpcParty, Outgoing, ProtocolMessage,
+};
 
 #[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]
 pub enum Msg {
@@ -40,8 +42,8 @@ where
 
     // Define rounds
     let mut rounds = Rounds::<Msg>::builder();
-    let round1 = rounds.add_round(RoundInput::<CommitMsg>::new(i, n));
-    let round2 = rounds.add_round(RoundInput::<DecommitMsg>::new(i, n));
+    let round1 = rounds.add_round(RoundInput::<CommitMsg>::new(i, n, MessageType::Broadcast));
+    let round2 = rounds.add_round(RoundInput::<DecommitMsg>::new(i, n, MessageType::Broadcast));
     let mut rounds = rounds.listen(incoming);
 
     // --- The Protocol ---

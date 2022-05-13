@@ -48,7 +48,7 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
 use crate::delivery::{Delivery, Incoming, Outgoing};
-use crate::{MessageDestination, MpcParty};
+use crate::{MessageDestination, MessageType, MpcParty};
 
 /// Multiparty protocol simulator
 pub struct Simulation<M> {
@@ -192,9 +192,15 @@ impl<M> Sink<Outgoing<M>> for MockedOutgoing<M> {
     }
 
     fn start_send(self: Pin<&mut Self>, msg: Outgoing<M>) -> Result<(), Self::Error> {
+        let is_broadcast = msg.is_broadcast();
         self.sender
             .send(msg.map(|m| Incoming {
                 sender: self.local_party_idx,
+                msg_type: if is_broadcast {
+                    MessageType::Broadcast
+                } else {
+                    MessageType::P2P
+                },
                 msg: m,
             }))
             .map_err(|_| broadcast::error::SendError(()))?;

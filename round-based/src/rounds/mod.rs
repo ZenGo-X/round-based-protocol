@@ -268,15 +268,12 @@ where
         store: &mut S,
         msg: Incoming<M>,
     ) -> Result<(), CompleteRoundError<S::Error, Never>> {
-        let msg = Incoming {
-            sender: msg.sender,
-            msg: M::from_protocol_message(msg.msg).map_err(|msg| {
-                BugReason::MessageFromAnotherRound {
-                    actual_number: msg.round(),
-                    expected_round: M::ROUND,
-                }
-            })?,
-        };
+        let msg = msg.try_map(M::from_protocol_message).map_err(|msg| {
+            BugReason::MessageFromAnotherRound {
+                actual_number: msg.round(),
+                expected_round: M::ROUND,
+            }
+        })?;
 
         store
             .add_message(msg)
