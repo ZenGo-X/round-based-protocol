@@ -23,7 +23,7 @@ pub mod store;
 
 pub struct Rounds<M, S = ()> {
     incomings: S,
-    rounds: HashMap<u16, Option<Box<dyn ProcessRoundMessage<Msg = M>>>>,
+    rounds: HashMap<u16, Option<Box<dyn ProcessRoundMessage<Msg = M> + Send>>>,
 }
 
 impl<M: ProtocolMessage + 'static> Rounds<M> {
@@ -144,7 +144,7 @@ where
     }
 
     fn retrieve_round_output<R>(
-        slot: &mut Option<Box<dyn ProcessRoundMessage<Msg = M>>>,
+        slot: &mut Option<Box<dyn ProcessRoundMessage<Msg = M> + Send>>,
     ) -> Result<R::Output, CompleteRoundError<R::Error, E>>
     where
         R: MessagesStore,
@@ -171,7 +171,7 @@ where
 }
 
 pub struct RoundsBuilder<M> {
-    rounds: HashMap<u16, Option<Box<dyn ProcessRoundMessage<Msg = M>>>>,
+    rounds: HashMap<u16, Option<Box<dyn ProcessRoundMessage<Msg = M> + Send>>>,
 }
 
 impl<M> RoundsBuilder<M>
@@ -186,7 +186,9 @@ where
 
     pub fn add_round<R>(&mut self, message_store: R) -> Round<R>
     where
-        R: MessagesStore + 'static,
+        R: MessagesStore + Send + 'static,
+        R::Output: Send,
+        R::Error: Send,
         M: RoundMessage<R::Msg>,
     {
         let overridden_round = self.rounds.insert(
