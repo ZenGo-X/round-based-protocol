@@ -3,15 +3,13 @@ use futures::future;
 use sha2::{Digest, Sha256};
 use test_case::test_case;
 
-use ecdsa_mpc::algorithms::zkp::ZkpSetup;
-use ecdsa_mpc::ecdsa::signature::Message as SignMsg;
 use sorted_vec::SortedVec;
 
 use round_based::simulation::Simulation;
-use round_based_ing::{KeyShare, Keygen, Message, Signing};
+use round_based_ing::{KeyShare, Keygen, KeygenSetup, Message, Signing, SigningMsg};
 
 lazy_static::lazy_static! {
-    static ref ZKP_SETUPS: Vec<ZkpSetup> = serde_json::from_str(include_str!("../data/dev_zkp_setup.json")).unwrap();
+    static ref ZKP_SETUPS: Vec<KeygenSetup> = serde_json::from_str(include_str!("../data/dev_zkp_setup.json")).unwrap();
     static ref SECP256K1: secp256k1::Secp256k1<secp256k1::All> = secp256k1::Secp256k1::gen_new();
 }
 
@@ -77,7 +75,7 @@ async fn simulate_keygen(min_signers: u16, n: u16) -> anyhow::Result<Vec<KeyShar
         running.push(async move {
             let span = tracing::span!(tracing::Level::TRACE, "keygen", party_index = i);
             Keygen::new(i, min_signers, n)?
-                .set_zkp_setup(ZKP_SETUPS[usize::from(i)].clone())
+                .set_pregenerated_setup(ZKP_SETUPS[usize::from(i)].clone())
                 .enable_logs(span)
                 .run(party)
                 .await
@@ -100,7 +98,7 @@ async fn simulate_signing(
         .into();
 
     // Run signing
-    let mut simulation = Simulation::<SignMsg>::with_capacity(signers.len() * signers.len());
+    let mut simulation = Simulation::<SigningMsg>::with_capacity(signers.len() * signers.len());
     let mut running = vec![];
 
     for (i, signer) in (0..).zip(signers) {

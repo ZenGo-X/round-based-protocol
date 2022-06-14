@@ -29,3 +29,8 @@ sha2 = "0.9"
 
 [[test]]
 name = "t_ecdsa"
+required-features = ["dangerous-capabilities"]
+
+[features]
+default = []
+dangerous-capabilities = []

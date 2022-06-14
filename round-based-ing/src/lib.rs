@@ -1,16 +1,16 @@
 use std::sync::Arc;
 use std::{fmt, ops};
 
-pub use ecdsa_mpc::algorithms::zkp::ZkpSetup;
 pub use ecdsa_mpc::ecdsa::keygen::Message as KeygenMsg;
 pub use ecdsa_mpc::ecdsa::signature::Message as SigningMsg;
 
 use curv_kzen::elliptic::curves::secp256_k1::FE as InitialSecret;
 use curv_kzen::elliptic::curves::traits::{ECPoint, ECScalar};
+use ecdsa_mpc::algorithms::zkp::ZkpSetup;
 use ecdsa_mpc::ecdsa::keygen::{
     self, DecryptionKey, MultiPartyInfo, SecretKeyLoader, SecretKeyLoaderError,
 };
-use ecdsa_mpc::ecdsa::signature::{self as signing};
+use ecdsa_mpc::ecdsa::signature as signing;
 use ecdsa_mpc::ecdsa::{InitialKeys, InitialPublicKeys};
 use ecdsa_mpc::protocol::PartyIndex;
 use ecdsa_mpc::Parameters;
@@ -22,12 +22,12 @@ use serde::{Deserialize, Serialize};
 
 use round_based::Mpc;
 
-use thiserror::Error;
-
 use crate::debugging::Debugging;
+use crate::errors::*;
 use crate::generic::Parties;
 
 mod debugging;
+pub mod errors;
 mod generic;
 
 /// Distributed key generation
@@ -35,7 +35,7 @@ pub struct Keygen {
     i: u16,
     min_signers: u16,
     n: u16,
-    zkp_setup: Option<ZkpSetup>,
+    keygen_setup: Option<KeygenSetup>,
     initial_keys: Option<(
         InitialPublicKeys,
         Arc<Box<dyn SecretKeyLoader + Send + Sync>>,
@@ -53,7 +53,7 @@ impl Keygen {
     /// following requirements:
     /// * `n >= 2`
     /// * `0 <= i < n`
-    /// * `0 < min_signers <= n`
+    /// * `2 <= min_signers <= n`
     pub fn new(i: u16, min_signers: u16, n: u16) -> Result<Self, InvalidKeygenParameters> {
         if n < 2 {
             Err(InvalidKeygenParameters::TooFewParties { n })
@@ -66,25 +66,28 @@ impl Keygen {
                 i,
                 min_signers,
                 n,
-                zkp_setup: None,
+                keygen_setup: None,
                 initial_keys: None,
                 debugging: None,
             })
         }
     }
 
-    /// Sets ZKP setup
+    /// Sets [keygen setup](KeygenSetup) (optional)
     ///
-    /// By default, we generate a new random setup of 2048 bits group order.
+    /// If not specified, setup will be generated prior to start of the protocol.
     /// Note that this operation is computationally heavy.
-    pub fn set_zkp_setup(mut self, setup: ZkpSetup) -> Self {
-        self.zkp_setup = Some(setup);
+    pub fn set_pregenerated_setup(mut self, setup: KeygenSetup) -> Self {
+        self.keygen_setup = Some(setup);
         self
     }
 
-    /// Sets initial keygen keys
+    /// Sets initial local secret (optional)
     ///
-    /// By default, we generate initial keys and store them in memory.
+    /// Initial local secret is a party contribution into resulting co-generated key.
+    ///
+    /// If not specified, initial local secret will be randomly generated on the start of
+    /// the protocol.
     pub fn set_initial_keys(
         mut self,
         public_keys: InitialPublicKeys,
@@ -94,7 +97,7 @@ impl Keygen {
         self
     }
 
-    /// Enables logging
+    /// Enables logging (optional)
     ///
     /// All the logs will be spanned with given `span`
     pub fn enable_logs(mut self, span: tracing::Span) -> Self {
@@ -129,7 +132,10 @@ impl Keygen {
                 Arc::new(Box::new(InMemorySecretStorage(init_keys))),
             )
         });
-        let zkp_setup = self.zkp_setup.unwrap_or_else(|| ZkpSetup::random(2048));
+        let zkp_setup = self
+            .keygen_setup
+            .unwrap_or_else(|| KeygenSetup::generate())
+            .0;
 
         // Construct initial keygen state
         let initial_state = keygen::Phase1::new(
@@ -237,85 +243,6 @@ impl TryFrom<ecdsa_mpc::ecdsa::keygen::MultiPartyInfo> for KeyShare {
 impl From<KeyShare> for ecdsa_mpc::ecdsa::keygen::MultiPartyInfo {
     fn from(KeyShare { share, .. }: KeyShare) -> Self {
         share
-    }
-}
-
-/// Explains why [`KeyShare`] appears to be invalid
-#[derive(Debug, Error)]
-pub enum IncorrectKeyShare {
-    #[error("local party index is too large (it must fit into u16): {i}")]
-    TooLargeIndex { i: PartyIndex },
-    #[error("number of parties is too large (it must fit into u16): {n}")]
-    TooLargeNumberOfParties { n: usize },
-    #[error("threshold is too large (it must fit into u16): {min_signers}")]
-    TooLargeThreshold { min_signers: usize },
-}
-
-#[derive(Debug, Error)]
-pub enum InvalidKeygenParameters {
-    #[error("too small number of parties n={n} (required at least 2)")]
-    TooFewParties { n: u16 },
-    #[error(
-        "incorrect threshold: must be 1 < min_signers <= n (min_signers={min_signers}, n={n})"
-    )]
-    IncorrectThreshold { min_signers: u16, n: u16 },
-    #[error("index of local party i={i} should be less than number of parties n={n}")]
-    IncorrectPartyIndex { i: u16, n: u16 },
-}
-
-#[derive(Debug, Error)]
-pub enum KeygenError<IErr, OErr> {
-    #[error("construct keygen initial state")]
-    ConstructPhase1(#[source] keygen::KeygenError),
-    #[error(transparent)]
-    ProtocolExecution(#[from] generic::Error<keygen::ErrorState, IErr, OErr>),
-    #[error("bug occurred")]
-    Bug(#[source] Bug),
-}
-
-#[derive(Debug, Error)]
-pub enum SigningError<IErr, OErr> {
-    #[error("construct signing initial state")]
-    ConstructPhase1(#[source] signing::SigningError),
-    #[error(transparent)]
-    ProtocolExecution(#[from] generic::Error<signing::ErrorState, IErr, OErr>),
-    #[error("resulting signature is not valid")]
-    ResultSignatureNotValid(#[source] secp256k1::Error),
-    #[error("bug occurred")]
-    Bug(#[source] Bug),
-}
-
-#[derive(Debug, Error)]
-#[error(transparent)]
-pub struct Bug(BugReason);
-
-#[derive(Debug, Error)]
-enum BugReason {
-    #[error("list of parties should be sorted by construction")]
-    PartiesListNotSorted,
-    #[error("keygen parameters are invalid, though we verified their correctness")]
-    InvalidParameters(#[source] keygen::KeygenError),
-    #[error("key share appear to be incorrect though it must be validated at this point")]
-    IncorrectKeyShare(IncorrectKeyShare),
-    #[error("party index overflows u16 though we checked its correctness")]
-    PartyIndexOverflowsU16,
-}
-
-impl<IErr, OErr> From<BugReason> for KeygenError<IErr, OErr> {
-    fn from(bug: BugReason) -> Self {
-        KeygenError::Bug(Bug(bug))
-    }
-}
-
-impl<IErr, OErr> From<BugReason> for SigningError<IErr, OErr> {
-    fn from(bug: BugReason) -> Self {
-        SigningError::Bug(Bug(bug))
-    }
-}
-
-impl From<BugReason> for InvalidSigningParameters {
-    fn from(bug: BugReason) -> Self {
-        InvalidSigningParameters::Bug(Bug(bug))
     }
 }
 
@@ -486,24 +413,6 @@ impl Message {
     }
 }
 
-/// Signing parameters are not consistent
-#[derive(Debug, Error)]
-pub enum InvalidSigningParameters {
-    /// Number of signers is less than required threshold
-    #[error("number of signers ({signers}) is less than required threshold ({min_signers})")]
-    TooFewSigners { signers: usize, min_signers: u16 },
-    /// Party listed in signers did not participate in key generation
-    #[error(
-        "party {party_index} didn't take part in key generation, but appears in list of signers"
-    )]
-    UnknownParty { party_index: u16 },
-    /// Local party is not in the list of signers
-    #[error("local party is not in the list of signers")]
-    PartyNotInSignersList,
-    #[error("bug occurred")]
-    Bug(#[source] Bug),
-}
-
 struct InMemorySecretStorage(InitialKeys);
 
 impl SecretKeyLoader for InMemorySecretStorage {
@@ -519,5 +428,49 @@ impl SecretKeyLoader for InMemorySecretStorage {
 impl fmt::Debug for InMemorySecretStorage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "InMemorySecretStorage")
+    }
+}
+
+/// Keygen setup
+///
+/// Key generation protocol has computationally heavy initial setup phase. Particularly,
+/// it needs to generate large primes which is a purely probabilistic algorithm that might
+/// take seconds or minutes depending on how lucky you are.
+///
+/// `KeygenSetup` represents completed setup phase. If you periodically generate many keys,
+/// you might want to carry out setup phase on a dedicated thread pool.
+///
+/// You can generate setup with [`KeygenSetup::generate()`], then you need to provide it to
+/// [`Keygen`] by calling [`Keygen::set_pregenerated_setup`] method. If you don't specify it,
+/// setup phase will be carried out prior to start of the protocol.
+///
+/// Note that setup can be used only once. Reusing the same setup might compromise security.
+/// For that reason, we do not provide (de)serialization or [`Clone`] traits by default.
+/// However, you can enable it by enabling feature `dangerous-capabilities`. Unless you enable
+/// this feature, it's not possible to reuse the same setup (in safe Rust).
+#[cfg_attr(
+    feature = "dangerous-capabilities",
+    derive(Serialize, Deserialize, Clone)
+)]
+#[cfg_attr(feature = "dangerous-capabilities", serde(transparent))]
+pub struct KeygenSetup(ZkpSetup);
+
+impl KeygenSetup {
+    /// Carries out key generation setup phase
+    pub fn generate() -> Self {
+        KeygenSetup(ZkpSetup::random(2048))
+    }
+}
+
+impl fmt::Debug for KeygenSetup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "KeygenSetup")
+    }
+}
+
+#[cfg(feature = "dangerous-capabilities")]
+impl From<ZkpSetup> for KeygenSetup {
+    fn from(setup: ZkpSetup) -> Self {
+        Self(setup)
     }
 }
