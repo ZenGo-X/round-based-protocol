@@ -1,3 +1,9 @@
+## v0.1.7
+- Add methods to access the state machine from `AsyncProtocol` [#9]
+  Adds methods `AsyncProtocol::state_machine_ref` and `AsyncProtocol::into_state_machine`
+
+[#7]: https://github.com/ZenGo-X/round-based-protocol/pull/9
+
 ## v0.1.6
 - Update documentation of StateMachine
 
