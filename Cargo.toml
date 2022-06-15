@@ -1,6 +1,6 @@
 [package]
 name = "round-based"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2018"
 authors = ["Denis Varlakov <dsurv@yandex.ru>"]
 license = "GPL-3.0"

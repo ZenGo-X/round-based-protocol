@@ -102,6 +102,28 @@ where
     O: Sink<Msg<SM::MessageBody>> + Unpin,
     W: ProtocolWatcher<SM>,
 {
+    /// Get a reference to the inner state machine.
+    ///
+    /// This is useful in case where you want to call any of the state machine's methods.
+    ///
+    /// Note that this could return an error if the state machine is missing, and that could
+    /// only happen if the task/thread that is running the proceed call panicked.
+    pub fn state_machine_ref(&self) -> Result<&SM, Error<SM::Err, IErr, O::Error>> {
+        self.state
+            .as_ref()
+            .ok_or_else(|| BadStateMachineReason::MissingStateMachine.into())
+    }
+
+    /// Try to convert the protocol into the inner state machine.
+    ///
+    /// Same as [`Self::state_machine_ref`], but instead of returning a reference, it will
+    /// take ownership of `self` and return the state machine, this useful in case when
+    /// the protocol has been executed and you want to get the state machine back.
+    pub fn into_state_machine(self) -> Result<SM, Error<SM::Err, IErr, O::Error>> {
+        self.state
+            .ok_or_else(|| BadStateMachineReason::MissingStateMachine.into())
+    }
+
     /// Executes the protocol
     ///
     /// Returns protocol output or first occurred critical error
@@ -349,6 +371,8 @@ pub enum BadStateMachineReason {
     /// [StateMachine::is_finished](crate::StateMachine::is_finished) returned `true`,
     /// but [StateMachine::pick_output](crate::StateMachine::pick_output) returned `None`
     ProtocolFinishedButNoResult,
+    /// StateMachine is missing, probably because the Proceed method panicked.
+    MissingStateMachine,
 }
 
 impl fmt::Display for BadStateMachineReason {
@@ -358,6 +382,7 @@ impl fmt::Display for BadStateMachineReason {
                 f,
                 "couldn't obtain protocol output although it is completed"
             ),
+            Self::MissingStateMachine => write!(f, "state machine is missing"),
         }
     }
 }
