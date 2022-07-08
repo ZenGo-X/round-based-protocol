@@ -1,3 +1,5 @@
+use std::fmt;
+
 use round_based::{Delivery, Incoming, MessageDestination, Mpc, MpcParty, Outgoing};
 
 use ecdsa_mpc::protocol::{Address, InputMessage, OutputMessage, PartyIndex};
@@ -5,8 +7,10 @@ use ecdsa_mpc::state_machine::{self, State, Transition};
 
 use futures::{SinkExt, StreamExt};
 use thiserror::Error;
+use tracing::{error, trace, trace_span, warn};
 
 pub async fn execute_ing_protocol<S, T, M>(
+    protocol_name: &'static str,
     party: M,
     initial_state: S,
     party_index: u16,
@@ -15,23 +19,35 @@ pub async fn execute_ing_protocol<S, T, M>(
 where
     S: State<T> + Send,
     T: StateMachineTraits,
+    T::ErrorState: fmt::Debug,
     M: Mpc<ProtocolMessage = T::Msg>,
 {
+    let span = trace_span!("MPC protocol execution", protocol = %protocol_name, i = party_index);
+    trace!(parent: &span, "Starting the protocol");
+
     let MpcParty { delivery, .. } = party.into_party();
     let (mut incomings, mut outgoings) = delivery.split();
 
     let mut state: Box<dyn State<T> + Send> = Box::new(initial_state);
 
-    loop {
+    for round_i in 1u16.. {
+        trace!(parent: &span, i = round_i, "Proceeding to round `i`");
+
         if let Some(msgs_to_send) = state.start() {
             for msg in msgs_to_send {
                 let msg = match convert_output_message_to_outgoing(&parties, msg) {
                     Ok(m) => m,
                     Err(UnknownDestination { recipient }) => {
-                        tracing::warn!(?recipient, "Protocol wants to send message to the party that doesn't take part in computation. Ignore that message.");
+                        warn!(?recipient, "Protocol wants to send message to the party that doesn't take part in computation. Ignore that message.");
                         continue;
                     }
                 };
+                trace!(
+                    parent: &span,
+                    recipient = ?msg.recipient,
+                    is_broadcast = msg.is_broadcast(),
+                    "Sending message to `recipient`"
+                );
                 outgoings.feed(msg).await.map_err(Error::SendMessage)?;
             }
             outgoings.flush().await.map_err(Error::SendMessage)?;
@@ -50,8 +66,18 @@ where
                 continue;
             }
 
+            trace!(
+                parent: &span,
+                sender = incoming.sender,
+                is_broadcast = incoming.is_broadcast(),
+                "Received message from `sender`"
+            );
             let msg = convert_incoming_to_input_message(&parties, incoming)?;
             if !state.is_message_expected(&msg, &received_msgs) {
+                error!(
+                    parent: &span,
+                    "State machine reported that message was not expected, aborting"
+                );
                 return Err(Error::ReceivedUnexpectedMessage { sender });
             }
             received_msgs.push(msg);
@@ -62,10 +88,18 @@ where
                 state = new_state;
                 continue;
             }
-            Transition::FinalState(Ok(output)) => return Ok(output),
-            Transition::FinalState(Err(err)) => return Err(Error::ProtocolError(err)),
+            Transition::FinalState(Ok(output)) => {
+                trace!(parent: &span, "Protocol terminated successfully");
+                return Ok(output);
+            }
+            Transition::FinalState(Err(err)) => {
+                error!(parent: &span, ?err, "Protocol terminated with error");
+                return Err(Error::ProtocolError(err));
+            }
         }
     }
+
+    Err(BugReason::NoResult)?
 }
 
 fn convert_output_message_to_outgoing<M>(
@@ -116,6 +150,8 @@ pub enum Error<PErr, IErr, OErr> {
     // UnknownDestination(#[from] UnknownDestination),
     #[error(transparent)]
     UnknownSender(#[from] UnknownSender),
+    #[error("bug occurred")]
+    Bug(#[source] Bug),
 }
 
 #[derive(Debug, Error)]
@@ -128,6 +164,22 @@ struct UnknownDestination {
 #[error("received message from unknown party {sender}")]
 pub struct UnknownSender {
     sender: u16,
+}
+
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct Bug(BugReason);
+
+#[derive(Debug, Error)]
+enum BugReason {
+    #[error("for loop yielded no result")]
+    NoResult,
+}
+
+impl<PErr, IErr, OErr> From<BugReason> for Error<PErr, IErr, OErr> {
+    fn from(err: BugReason) -> Self {
+        Error::Bug(Bug(err))
+    }
 }
 
 /// Extension of [`StateMachineTraits`](ecdsa_mpc::state_machine::StateMachineTraits)

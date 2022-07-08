@@ -151,6 +151,7 @@ impl Keygen {
 
         let share = if let Some(span) = self.debugging {
             generic::execute_ing_protocol(
+                "ecdsa-gg18 keygen",
                 party,
                 Debugging::new(initial_state).set_span(span),
                 self.i,
@@ -160,10 +161,16 @@ impl Keygen {
             .map_err(KeygenError::ProtocolExecution)?
             .multiparty_shared_info
         } else {
-            generic::execute_ing_protocol(party, initial_state, self.i, parties)
-                .await
-                .map_err(KeygenError::ProtocolExecution)?
-                .multiparty_shared_info
+            generic::execute_ing_protocol(
+                "ecdsa-gg18 keygen",
+                party,
+                initial_state,
+                self.i,
+                parties,
+            )
+            .await
+            .map_err(KeygenError::ProtocolExecution)?
+            .multiparty_shared_info
         };
 
         let share = KeyShare::try_from(share).map_err(BugReason::IncorrectKeyShare)?;
@@ -346,6 +353,7 @@ impl Signing {
 
         let signature = if let Some(span) = self.debugging {
             generic::execute_ing_protocol(
+                "ecdsa-gg18 signing",
                 party,
                 Debugging::new(initial_state).set_span(span),
                 i,
@@ -353,7 +361,14 @@ impl Signing {
             )
             .await?
         } else {
-            generic::execute_ing_protocol(party, initial_state, i, self.signers).await?
+            generic::execute_ing_protocol(
+                "ecdsa-gg18 signing",
+                party,
+                initial_state,
+                i,
+                self.signers,
+            )
+            .await?
         };
 
         let signature = ecdsa_mpc::ecdsa::Signature {
