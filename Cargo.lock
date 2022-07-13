@@ -386,6 +386,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "drain_filter_polyfill"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca9f76bdd86dfc8d64eecb0484d02ad4cf0e6767d4682f686d1b0580b6c27f82"
+
+[[package]]
 name = "ecdsa-mpc"
 version = "0.3.0"
 source = "git+https://github.com/ing-bank/threshold-signatures#f916016aa6299bff13e90a0ecba3de3dde77186f"
@@ -1483,6 +1489,7 @@ dependencies = [
  "anyhow",
  "curv-kzen",
  "digest 0.9.0",
+ "drain_filter_polyfill",
  "ecdsa-mpc",
  "futures",
  "lazy_static",

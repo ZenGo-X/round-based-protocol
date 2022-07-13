@@ -5,6 +5,7 @@ use round_based::{Delivery, Incoming, MessageDestination, Mpc, MpcParty, Outgoin
 use ecdsa_mpc::protocol::{Address, InputMessage, OutputMessage, PartyIndex};
 use ecdsa_mpc::state_machine::{self, State, Transition};
 
+use drain_filter_polyfill::VecExt;
 use futures::{SinkExt, StreamExt};
 use thiserror::Error;
 use tracing::{error, trace, trace_span, warn};
@@ -21,6 +22,7 @@ where
     T: StateMachineTraits,
     T::ErrorState: fmt::Debug,
     M: Mpc<ProtocolMessage = T::Msg>,
+    T::Msg: MessageRound,
 {
     let span = trace_span!("MPC protocol execution", protocol = %protocol_name, i = party_index);
     trace!(parent: &span, "Starting the protocol");
@@ -29,6 +31,7 @@ where
     let (mut incomings, mut outgoings) = delivery.split();
 
     let mut state: Box<dyn State<T> + Send> = Box::new(initial_state);
+    let mut out_of_order_messages: Vec<Incoming<T::Msg>> = vec![];
 
     for round_i in 1u16.. {
         trace!(parent: &span, i = round_i, "Proceeding to round `i`");
@@ -38,14 +41,17 @@ where
                 let msg = match convert_output_message_to_outgoing(&parties, msg) {
                     Ok(m) => m,
                     Err(UnknownDestination { recipient }) => {
-                        warn!(?recipient, "Protocol wants to send message to the party that doesn't take part in computation. Ignore that message.");
+                        warn!(
+                            parent: &span,
+                            ?recipient,
+                            "Protocol wants to send message to the party that doesn't take part in computation. Ignore that message."
+                        );
                         continue;
                     }
                 };
                 trace!(
                     parent: &span,
                     recipient = ?msg.recipient,
-                    is_broadcast = msg.is_broadcast(),
                     "Sending message to `recipient`"
                 );
                 outgoings.feed(msg).await.map_err(Error::SendMessage)?;
@@ -53,25 +59,56 @@ where
             outgoings.flush().await.map_err(Error::SendMessage)?;
         }
 
+        let mut out_of_order_messages_for_this_round = out_of_order_messages
+            .drain_filter(|incoming| incoming.msg.round() == round_i)
+            .collect::<Vec<_>>();
+        out_of_order_messages_for_this_round.reverse();
+
         let mut received_msgs = vec![];
         while !state.is_input_complete(&received_msgs) {
-            let incoming = incomings
-                .next()
-                .await
-                .ok_or(Error::UnexpectedEof)?
-                .map_err(Error::ReceiveNextMessage)?;
+            let incoming = if let Some(msg) = out_of_order_messages_for_this_round.pop() {
+                trace!(parent: &span, "Retrieved out of order message");
+                msg
+            } else {
+                incomings
+                    .next()
+                    .await
+                    .ok_or(Error::UnexpectedEof)?
+                    .map_err(Error::ReceiveNextMessage)?
+            };
             let sender = incoming.sender;
-            if sender == party_index {
-                // Ignore own messages
-                continue;
-            }
 
             trace!(
                 parent: &span,
                 sender = incoming.sender,
                 is_broadcast = incoming.is_broadcast(),
+                message_round = incoming.msg.round(),
                 "Received message from `sender`"
             );
+
+            if sender == party_index {
+                trace!(
+                    parent: &span,
+                    "Message was sent by this party - ignoring it"
+                );
+                continue;
+            }
+            if incoming.msg.round() < round_i {
+                warn!(
+                    parent: &span,
+                    "Received message from previous round. Ignore that message."
+                );
+                continue;
+            }
+            if incoming.msg.round() > round_i {
+                trace!(
+                    parent: &span,
+                    "Received out of order message, save it to process later"
+                );
+                out_of_order_messages.push(incoming);
+                continue;
+            }
+
             let msg = convert_incoming_to_input_message(&parties, incoming)?;
             if !state.is_message_expected(&msg, &received_msgs) {
                 error!(
@@ -271,4 +308,36 @@ pub enum InvalidPartiesList {
     NotSorted,
     #[error("list of parties too large: it must fit into u16")]
     TooLarge,
+}
+
+pub trait MessageRound {
+    fn round(&self) -> u16;
+}
+
+impl MessageRound for ecdsa_mpc::ecdsa::messages::keygen::Message {
+    fn round(&self) -> u16 {
+        match self {
+            Self::R1(..) => 1,
+            Self::R2(..) => 2,
+            Self::R3(..) => 3,
+            Self::R4(..) => 4,
+        }
+    }
+}
+
+impl MessageRound for ecdsa_mpc::ecdsa::messages::signing::Message {
+    fn round(&self) -> u16 {
+        match self {
+            Self::R1(..) => 1,
+            Self::R2(..) => 2,
+            Self::R2b(..) => 3,
+            Self::R3(..) => 4,
+            Self::R4(..) => 5,
+            Self::R5(..) => 6,
+            Self::R6(..) => 7,
+            Self::R7(..) => 8,
+            Self::R8(..) => 9,
+            Self::R9(..) => 10,
+        }
+    }
 }
