@@ -11,7 +11,7 @@ use ecdsa_mpc::ecdsa::keygen::{
     self, DecryptionKey, MultiPartyInfo, SecretKeyLoader, SecretKeyLoaderError,
 };
 use ecdsa_mpc::ecdsa::signature as signing;
-use ecdsa_mpc::ecdsa::{InitialKeys, InitialPublicKeys};
+use ecdsa_mpc::ecdsa::{InitialKeys, InitialPublicKeys, PaillierKeys};
 use ecdsa_mpc::protocol::PartyIndex;
 use ecdsa_mpc::Parameters;
 use sorted_vec::SortedVec;
@@ -36,10 +36,6 @@ pub struct Keygen {
     min_signers: u16,
     n: u16,
     keygen_setup: Option<KeygenSetup>,
-    initial_keys: Option<(
-        InitialPublicKeys,
-        Arc<Box<dyn SecretKeyLoader + Send + Sync>>,
-    )>,
     debugging: Option<tracing::Span>,
 }
 
@@ -67,7 +63,6 @@ impl Keygen {
                 min_signers,
                 n,
                 keygen_setup: None,
-                initial_keys: None,
                 debugging: None,
             })
         }
@@ -79,21 +74,6 @@ impl Keygen {
     /// Note that this operation is computationally heavy.
     pub fn set_pregenerated_setup(mut self, setup: KeygenSetup) -> Self {
         self.keygen_setup = Some(setup);
-        self
-    }
-
-    /// Sets initial local secret (optional)
-    ///
-    /// Initial local secret is a party contribution into resulting co-generated key.
-    ///
-    /// If not specified, initial local secret will be randomly generated on the start of
-    /// the protocol.
-    pub fn set_initial_keys(
-        mut self,
-        public_keys: InitialPublicKeys,
-        keys_loader: Arc<Box<dyn SecretKeyLoader + Send + Sync>>,
-    ) -> Self {
-        self.initial_keys = Some((public_keys, keys_loader));
         self
     }
 
@@ -123,19 +103,31 @@ impl Keygen {
             .collect::<Vec<_>>();
         let parties = Parties::try_from(parties).or(Err(BugReason::PartiesListNotSorted))?;
 
+        // Extract or generate keygen setup
+        let KeygenSetup {
+            zkp_setup,
+            paillier_key,
+        } = self.keygen_setup.unwrap_or_else(|| KeygenSetup::generate());
+
         // Generate initial keys
-        let (initial_public_keys, keys_loader) = self.initial_keys.unwrap_or_else(|| {
-            let init_keys = InitialKeys::random();
+        let (initial_public_keys, keys_loader) = {
+            use curv_kzen::elliptic::curves::traits::*;
+            use curv_kzen::{FE, GE};
+
+            let random_scalar = FE::new_random();
+            let commitment = GE::generator() * &random_scalar;
+
+            let init_keys = InitialKeys {
+                u_i: random_scalar,
+                y_i: commitment,
+                paillier_keys: paillier_key,
+            };
             let initial_public_keys = InitialPublicKeys::from(&init_keys);
             (
                 initial_public_keys,
-                Arc::new(Box::new(InMemorySecretStorage(init_keys))),
+                Arc::new(Box::new(InMemorySecretStorage(init_keys)) as _),
             )
-        });
-        let zkp_setup = self
-            .keygen_setup
-            .unwrap_or_else(|| KeygenSetup::generate())
-            .0;
+        };
 
         // Construct initial keygen state
         let initial_state = keygen::Phase1::new(
@@ -467,25 +459,37 @@ impl fmt::Debug for InMemorySecretStorage {
     feature = "dangerous-capabilities",
     derive(Serialize, Deserialize, Clone)
 )]
-#[cfg_attr(feature = "dangerous-capabilities", serde(transparent))]
-pub struct KeygenSetup(ZkpSetup);
+pub struct KeygenSetup {
+    zkp_setup: ZkpSetup,
+    paillier_key: PaillierKeys,
+}
 
 impl KeygenSetup {
     /// Carries out key generation setup phase
     pub fn generate() -> Self {
-        KeygenSetup(ZkpSetup::random(2048))
+        KeygenSetup {
+            zkp_setup: ZkpSetup::random(2048),
+            paillier_key: PaillierKeys::random(),
+        }
+    }
+
+    /// Deconstruct setup, returns generated secrets
+    pub fn into_inner(self) -> (ZkpSetup, PaillierKeys) {
+        (self.zkp_setup, self.paillier_key)
+    }
+
+    /// Constructs setup from pregenerated data
+    #[cfg(feature = "dangerous-capabilities")]
+    pub fn from_pregenerated(zkp_setup: ZkpSetup, paillier_key: PaillierKeys) -> Self {
+        Self {
+            zkp_setup,
+            paillier_key,
+        }
     }
 }
 
 impl fmt::Debug for KeygenSetup {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "KeygenSetup")
-    }
-}
-
-#[cfg(feature = "dangerous-capabilities")]
-impl From<ZkpSetup> for KeygenSetup {
-    fn from(setup: ZkpSetup) -> Self {
-        Self(setup)
     }
 }
