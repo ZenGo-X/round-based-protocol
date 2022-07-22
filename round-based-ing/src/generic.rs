@@ -341,3 +341,27 @@ impl MessageRound for ecdsa_mpc::ecdsa::messages::signing::Message {
         }
     }
 }
+
+/// Encodes party index `i: u16` in [`PartyIndex`]
+///
+/// Party index is an unique identifier of the party that we use to determine message origin/destination.
+/// ING lib uses 32 bytes identifier, which is by design should be party public identity. However,
+/// `round-based` lib uses different approach: we identify parties with party index `i` (`0 <= i < n` where
+/// `n` is number of parties).
+///
+/// For that purposes, we provide conversion functions: [party_index_from_u16] encodes party index `i: u16`
+/// in ING [`PartyIndex`], and [party_index_to_u16] decodes party index `i: u16` from ING [`PartyIndex`].
+pub fn party_index_from_u16(index: u16) -> PartyIndex {
+    let mut index_bytes = [0u8; 32];
+    index_bytes[30..].copy_from_slice(&index.to_be_bytes());
+    PartyIndex(index_bytes)
+}
+
+/// Decodes party index `i: u16` from [`PartyIndex`]
+pub fn party_index_to_u16(index: &PartyIndex) -> Option<u16> {
+    if index.0[..30] != [0u8; 30] {
+        return None;
+    }
+    let index = <[u8; 2]>::try_from(&index.0[30..]).expect("exactly two bytes are given");
+    Some(u16::from_be_bytes(index))
+}

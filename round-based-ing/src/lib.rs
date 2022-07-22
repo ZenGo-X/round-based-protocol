@@ -12,7 +12,6 @@ use ecdsa_mpc::ecdsa::keygen::{
 };
 use ecdsa_mpc::ecdsa::signature as signing;
 use ecdsa_mpc::ecdsa::{InitialKeys, InitialPublicKeys, PaillierKeys};
-use ecdsa_mpc::protocol::PartyIndex;
 use ecdsa_mpc::Parameters;
 use sorted_vec::SortedVec;
 
@@ -28,7 +27,7 @@ use crate::generic::Parties;
 
 mod debugging;
 pub mod errors;
-mod generic;
+pub mod generic;
 
 /// Distributed key generation
 pub struct Keygen {
@@ -99,7 +98,7 @@ impl Keygen {
 
         // Make list of parties
         let parties = (0..self.n)
-            .map(|i| party_index_from_u16(i))
+            .map(|i| generic::party_index_from_u16(i))
             .collect::<Vec<_>>();
         let parties = Parties::try_from(parties).or(Err(BugReason::PartiesListNotSorted))?;
 
@@ -216,10 +215,11 @@ impl TryFrom<ecdsa_mpc::ecdsa::keygen::MultiPartyInfo> for KeyShare {
     type Error = IncorrectKeyShare;
 
     fn try_from(share: MultiPartyInfo) -> Result<Self, Self::Error> {
-        let i =
-            party_index_to_u16(&share.own_party_index).ok_or(IncorrectKeyShare::TooLargeIndex {
+        let i = generic::party_index_to_u16(&share.own_party_index).ok_or(
+            IncorrectKeyShare::TooLargeIndex {
                 i: share.own_party_index,
-            })?;
+            },
+        )?;
         let min_signers = share.key_params.signers().try_into().map_err(|_| {
             IncorrectKeyShare::TooLargeThreshold {
                 min_signers: share.key_params.signers(),
@@ -243,20 +243,6 @@ impl From<KeyShare> for ecdsa_mpc::ecdsa::keygen::MultiPartyInfo {
     fn from(KeyShare { share, .. }: KeyShare) -> Self {
         share
     }
-}
-
-fn party_index_from_u16(index: u16) -> PartyIndex {
-    let mut index_bytes = [0u8; 32];
-    index_bytes[30..].copy_from_slice(&index.to_be_bytes());
-    PartyIndex(index_bytes)
-}
-
-fn party_index_to_u16(index: &PartyIndex) -> Option<u16> {
-    if index.0[..30] != [0u8; 30] {
-        return None;
-    }
-    let index = <[u8; 2]>::try_from(&index.0[30..]).expect("exactly two bytes are given");
-    Some(u16::from_be_bytes(index))
 }
 
 /// Signing protocol
@@ -303,7 +289,7 @@ impl Signing {
         // Construct list of signers (for ing code)
         let signers = signers
             .iter()
-            .map(|i| party_index_from_u16(*i))
+            .map(|i| generic::party_index_from_u16(*i))
             .collect::<Vec<_>>();
         let signers = Parties::try_from(signers).or(Err(BugReason::PartiesListNotSorted))?;
 
