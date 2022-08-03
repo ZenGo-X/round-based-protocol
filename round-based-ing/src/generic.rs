@@ -49,6 +49,13 @@ where
                         continue;
                     }
                 };
+                if msg.recipient == MessageDestination::OneParty(party_index) {
+                    warn!(
+                        parent: &span,
+                        "Protocol wants to send message to itself. Ignore that message."
+                    );
+                    continue;
+                }
                 trace!(
                     parent: &span,
                     recipient = ?msg.recipient,
