@@ -233,6 +233,20 @@ impl<M> RoundInput<M> {
             expected_msg_type: msg_type,
         }
     }
+
+    /// Construct a new store for broadcast messages
+    ///
+    /// The same as `RoundInput::new(i, n, MessageType::Broadcast)`
+    pub fn broadcast(i: u16, n: u16) -> Self {
+        Self::new(i, n, MessageType::Broadcast)
+    }
+
+    /// Construct a new store for p2p messages
+    ///
+    /// The same as `RoundInput::new(i, n, MessageType::P2P)`
+    pub fn p2p(i: u16, n: u16) -> Self {
+        Self::new(i, n, MessageType::P2P)
+    }
 }
 
 impl<M> MessagesStore for RoundInput<M>
@@ -303,6 +317,22 @@ impl<M> RoundMsgs<M> {
     pub fn into_vec_including_me(mut self, my_msg: M) -> Vec<M> {
         self.messages.insert(usize::from(self.i), my_msg);
         self.messages
+    }
+
+    /// Returns iterator over messages with sender indexes
+    ///
+    /// Iterator yields `(sender_index, message)`
+    pub fn into_iter_indexed(self) -> impl Iterator<Item = (u16, M)> {
+        let indexes = (0..self.i).chain(self.i + 1..);
+        indexes.zip(self.messages)
+    }
+
+    /// Returns iterator over messages with sender indexes
+    ///
+    /// Iterator yields `(sender_index, &message)`
+    pub fn iter_indexed(&self) -> impl Iterator<Item = (u16, &M)> {
+        let indexes = (0..self.i).chain(self.i + 1..);
+        indexes.zip(&self.messages)
     }
 }
 
