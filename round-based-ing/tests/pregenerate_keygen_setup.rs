@@ -24,7 +24,7 @@ fn pregenerate_keygen_setup() {
             counter += 1;
             println!("Generated setups: {counter}")
         })
-        .take(10)
+        .take(20)
         .collect::<Vec<_>>();
     serde_json::to_writer_pretty(output, &setups).expect("serialize and save");
 }
