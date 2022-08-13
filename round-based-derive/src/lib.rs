@@ -119,6 +119,7 @@ fn round_messages<'v>(
                             #enum_name::#variant_name(round_message)
                         }
                         fn from_protocol_message(protocol_message: Self) -> Result<#msg_type, Self> {
+                            #[allow(unreachable_patterns)]
                             match protocol_message {
                                 #enum_name::#variant_name(msg) => Ok(msg),
                                 _ => Err(protocol_message),
