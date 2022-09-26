@@ -47,14 +47,6 @@ where
             n = msgs.as_ref().map(Vec::len).unwrap_or_default(),
             "State::start enqueued `n` messages to be sent"
         );
-        for msg in msgs.iter().flatten() {
-            trace!(
-                parent: &self.span,
-                recipient = ?msg.recipient,
-                msg = ?msg.body,
-                "Enqueued outgoing message"
-            )
-        }
         msgs
     }
 
@@ -66,7 +58,6 @@ where
         trace!(
             parent: &self.span,
             sender = ?msg.sender,
-            msg = ?msg.body,
             "State::is_message_expected"
         );
         let is_expected = self.state.is_message_expected(msg, current_msg_set);
@@ -93,7 +84,7 @@ where
                 }))
             }
             Transition::FinalState(Ok(output)) => {
-                trace!(parent: &self.span, ?output, "Protocol terminated");
+                trace!(parent: &self.span, "Protocol terminated");
                 Transition::FinalState(Ok(output))
             }
             Transition::FinalState(Err(err)) => {
