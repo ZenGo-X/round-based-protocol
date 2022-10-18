@@ -2,6 +2,50 @@
 //!
 //! [`Rounds`] is an essential building block of MPC protocol, it processes incoming messages, groups
 //! them by rounds, and provides convenient API for retrieving received messages at certain round.
+//!
+//! ## Example
+//!
+//! ```rust
+//! use round_based::{Mpc, MpcParty, ProtocolMessage, Delivery, PartyIndex};
+//! use round_based::rounds::{Rounds, simple_store::{RoundInput, RoundMsgs}};
+//!
+//! #[derive(ProtocolMessage)]
+//! pub enum Msg {
+//!     Round1(Msg1),
+//!     Round2(Msg2),
+//! }
+//!
+//! pub struct Msg1 { /* ... */ }
+//! pub struct Msg2 { /* ... */ }
+//!
+//! pub async fn some_mpc_protocol<M>(party: M, i: PartyIndex, n: u16) -> Result<Output, Error>
+//! where
+//!     M: Mpc<ProtocolMessage = Msg>,
+//! {
+//!     let MpcParty{ delivery, .. } = party.into_party();
+//!
+//!     let (incomings, _outgoings) = delivery.split();
+//!
+//!     // Build `Rounds`
+//!     let mut rounds = Rounds::builder();
+//!     let round1 = rounds.add_round(RoundInput::<Msg1>::broadcast(i, n));
+//!     let round2 = rounds.add_round(RoundInput::<Msg2>::p2p(i, n));
+//!     let mut rounds = rounds.listen(incomings);
+//!
+//!     // Receive messages from round 1
+//!     let msgs: RoundMsgs<Msg1> = rounds.complete(round1).await?;
+//!
+//!     // ... process received messages
+//!
+//!     // Receive messages from round 2
+//!     let msgs = rounds.complete(round2).await?;
+//!
+//!     // ...
+//!     # todo!()
+//! }
+//! # type Output = ();
+//! # type Error = Box<dyn std::error::Error>;
+//! ```
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -16,11 +60,16 @@ use tracing::{debug, error, trace, trace_span, warn, Span};
 
 use crate::Incoming;
 
-use self::store::MessagesStore;
-use super::{ProtocolMessage, RoundMessage};
+#[doc(inline)]
+pub use self::errors::CompleteRoundError;
+pub use self::store::*;
 
-pub mod store;
+pub mod simple_store;
+mod store;
 
+/// Routes received messages between protocol rounds
+///
+/// See [module level](self) documentation to learn more about it.
 pub struct Rounds<M, S = ()> {
     incomings: S,
     rounds: HashMap<u16, Option<Box<dyn ProcessRoundMessage<Msg = M> + Send>>>,
@@ -78,8 +127,8 @@ where
         loop {
             let incoming = match self.incomings.next().await {
                 Some(Ok(msg)) => msg,
-                Some(Err(err)) => return Err(CompleteRoundError::Io(err)),
-                None => return Err(CompleteRoundError::UnexpectedEof),
+                Some(Err(err)) => return Err(errors::IoError::Io(err).into()),
+                None => return Err(errors::IoError::UnexpectedEof.into()),
             };
             let message_round_n = incoming.msg.round();
 
@@ -93,7 +142,11 @@ where
                     );
                     continue;
                 }
-                None => return Err(CompleteRoundError::UnregisteredRound { n: message_round_n }),
+                None => {
+                    return Err(
+                        errors::RoundsMisuse::UnregisteredRound { n: message_round_n }.into(),
+                    )
+                }
             };
             if message_round.needs_more_messages().no() {
                 warn!(
@@ -124,17 +177,17 @@ where
         let round_slot = match self
             .rounds
             .get_mut(&round_number)
-            .ok_or(CompleteRoundError::UnregisteredRound { n: round_number })
+            .ok_or(errors::RoundsMisuse::UnregisteredRound { n: round_number })
         {
             Ok(slot) => slot,
-            Err(err) => return Some(Err(err)),
+            Err(err) => return Some(Err(err.into())),
         };
         let round = match round_slot
             .as_mut()
-            .ok_or(CompleteRoundError::RoundAlreadyCompleted)
+            .ok_or(errors::RoundsMisuse::RoundAlreadyCompleted)
         {
             Ok(round) => round,
-            Err(err) => return Some(Err(err)),
+            Err(err) => return Some(Err(err.into())),
         };
         if round.needs_more_messages().no() {
             Some(Self::retrieve_round_output::<R>(round_slot))
@@ -150,26 +203,27 @@ where
         R: MessagesStore,
         M: RoundMessage<R::Msg>,
     {
-        let mut round = slot.take().ok_or(CompleteRoundError::UnregisteredRound {
+        let mut round = slot.take().ok_or(errors::RoundsMisuse::UnregisteredRound {
             n: <M as RoundMessage<R::Msg>>::ROUND,
         })?;
         match round.take_output() {
             Ok(Ok(any)) => Ok(*any
                 .downcast::<R::Output>()
                 .or(Err(CompleteRoundError::from(
-                    BugReason::MismatchedOutputType,
+                    errors::Bug::MismatchedOutputType,
                 )))?),
             Ok(Err(any)) => Err(any
                 .downcast::<CompleteRoundError<R::Error, Never>>()
                 .or(Err(CompleteRoundError::from(
-                    BugReason::MismatchedErrorType,
+                    errors::Bug::MismatchedErrorType,
                 )))?
                 .map_io_err(|e| e.into_any())),
-            Err(err) => Err(BugReason::TakeRoundResult(err).into()),
+            Err(err) => Err(errors::Bug::TakeRoundResult(err).into()),
         }
     }
 }
 
+/// Builds [`Rounds`]
 pub struct RoundsBuilder<M> {
     rounds: HashMap<u16, Option<Box<dyn ProcessRoundMessage<Msg = M> + Send>>>,
 }
@@ -217,6 +271,10 @@ where
     }
 }
 
+/// A round of MPC protocol
+///
+/// `Round` can be used to retrieve messages received at this round by calling [`Rounds::complete`]. See
+/// [module level](self) documentation to see usage.
 pub struct Round<S: MessagesStore> {
     _ph: PhantomType<S>,
 }
@@ -271,7 +329,7 @@ where
         msg: Incoming<M>,
     ) -> Result<(), CompleteRoundError<S::Error, Never>> {
         let msg = msg.try_map(M::from_protocol_message).map_err(|msg| {
-            BugReason::MessageFromAnotherRound {
+            errors::Bug::MessageFromAnotherRound {
                 actual_number: msg.round(),
                 expected_round: M::ROUND,
             }
@@ -308,7 +366,7 @@ where
                 let store = match mem::replace(self, Self::Gone) {
                     Self::InProgress { store, .. } => store,
                     _ => {
-                        *self = Self::Completed(Err(BugReason::IncoherentState {
+                        *self = Self::Completed(Err(errors::Bug::IncoherentState {
                             expected: "InProgress",
                             justification:
                                 "we checked at beginning of the function that `state` is InProgress",
@@ -320,7 +378,10 @@ where
 
                 match store.output() {
                     Ok(output) => *self = Self::Completed(Ok(output)),
-                    Err(_err) => *self = Self::Completed(Err(CompleteRoundError::StoreDidntOutput)),
+                    Err(_err) => {
+                        *self =
+                            Self::Completed(Err(errors::ImproperStoreImpl::StoreDidntOutput.into()))
+                    }
                 }
             }
             Err(err) => {
@@ -365,78 +426,138 @@ impl NeedsMoreMessages {
     }
 }
 
-#[derive(Debug, Error)]
-pub enum CompleteRoundError<ProcessErr, IoErr> {
-    /// [`MessagesStore`] failed to process this message
-    #[error("failed to process the message")]
-    ProcessMessage(#[source] ProcessErr),
-    /// Store indicated that it received enough messages but didn't output
-    ///
-    /// I.e. [`store.wants_more()`] returned `false`, but `store.output()` returned `Err(_)`.
-    /// Practically it means that there's a bug in [`MessagesStore`] implementation.
-    #[error("store didn't output")]
-    StoreDidntOutput,
-    #[error("round is already completed")]
-    RoundAlreadyCompleted,
-    #[error("receiving next message resulted into error")]
-    Io(#[source] IoErr),
-    #[error("receiving next message failed: unexpected eof")]
-    UnexpectedEof,
-    #[error("round {n} is not registered")]
-    UnregisteredRound { n: u16 },
-    /// Indicates a bug in [`Rounds`] implementation
-    #[error("bug occurred")]
-    Bug(#[source] CompleteRoundBug),
-}
+/// When something goes wrong
+pub mod errors {
+    use thiserror::Error;
 
-impl<ProcessErr, IoErr> CompleteRoundError<ProcessErr, IoErr> {
-    fn map_io_err<E, F>(self, f: F) -> CompleteRoundError<ProcessErr, E>
-    where
-        F: FnOnce(IoErr) -> E,
-    {
-        match self {
-            CompleteRoundError::Io(err) => CompleteRoundError::Io(f(err)),
-            CompleteRoundError::ProcessMessage(err) => CompleteRoundError::ProcessMessage(err),
-            CompleteRoundError::StoreDidntOutput => CompleteRoundError::StoreDidntOutput,
-            CompleteRoundError::RoundAlreadyCompleted => CompleteRoundError::RoundAlreadyCompleted,
-            CompleteRoundError::UnexpectedEof => CompleteRoundError::UnexpectedEof,
-            CompleteRoundError::Bug(err) => CompleteRoundError::Bug(err),
-            CompleteRoundError::UnregisteredRound { n } => {
-                CompleteRoundError::UnregisteredRound { n }
+    use super::TakeOutputError;
+
+    /// Error indicating that `Rounds` failed to complete certain round
+    #[derive(Debug, Error)]
+    pub enum CompleteRoundError<ProcessErr, IoErr> {
+        /// [`MessagesStore`](super::MessagesStore) failed to process this message
+        #[error("failed to process the message")]
+        ProcessMessage(#[source] ProcessErr),
+        /// Receiving next message resulted into i/o error
+        #[error("receive next message")]
+        Io(
+            #[source]
+            #[from]
+            IoError<IoErr>,
+        ),
+        /// Some implementation specific error
+        ///
+        /// Error may be result of improper `MessagesStore` implementation, API misuse, or bug
+        /// in `Rounds` implementation
+        #[error("implementation error")]
+        Other(#[source] OtherError),
+    }
+
+    /// Error indicating that receiving next message resulted into i/o error
+    #[derive(Error, Debug)]
+    pub enum IoError<E> {
+        #[error("i/o error")]
+        Io(#[source] E),
+        #[error("unexpected eof")]
+        UnexpectedEof,
+    }
+
+    /// Some implementation specific error
+    ///
+    /// Error may be result of improper `MessagesStore` implementation, API misuse, or bug
+    /// in `Rounds` implementation
+    #[derive(Error, Debug)]
+    #[error(transparent)]
+    pub struct OtherError(OtherReason);
+
+    #[derive(Error, Debug)]
+    pub(super) enum OtherReason {
+        #[error("improper `MessagesStore` implementation")]
+        ImproperStoreImpl(ImproperStoreImpl),
+        #[error("`Rounds` API misuse")]
+        RoundsMisuse(RoundsMisuse),
+        #[error("bug in `Rounds` (please, open a issue)")]
+        Bug(Bug),
+    }
+
+    #[derive(Debug, Error)]
+    pub(super) enum ImproperStoreImpl {
+        /// Store indicated that it received enough messages but didn't output
+        ///
+        /// I.e. [`store.wants_more()`] returned `false`, but `store.output()` returned `Err(_)`.
+        #[error("store didn't output")]
+        StoreDidntOutput,
+    }
+
+    #[derive(Debug, Error)]
+    pub(super) enum RoundsMisuse {
+        #[error("round is already completed")]
+        RoundAlreadyCompleted,
+        #[error("round {n} is not registered")]
+        UnregisteredRound { n: u16 },
+    }
+
+    #[derive(Debug, Error)]
+    pub(super) enum Bug {
+        #[error(
+            "message originates from another round: we process messages from round \
+            {expected_round}, got message from round {actual_number}"
+        )]
+        MessageFromAnotherRound {
+            expected_round: u16,
+            actual_number: u16,
+        },
+        #[error("state is incoherent, it's expected to be {expected}: {justification}")]
+        IncoherentState {
+            expected: &'static str,
+            justification: &'static str,
+        },
+        #[error("mismatched output type")]
+        MismatchedOutputType,
+        #[error("mismatched error type")]
+        MismatchedErrorType,
+        #[error("take round result")]
+        TakeRoundResult(#[source] TakeOutputError),
+    }
+
+    impl<ProcessErr, IoErr> CompleteRoundError<ProcessErr, IoErr> {
+        pub(super) fn map_io_err<E, F>(self, f: F) -> CompleteRoundError<ProcessErr, E>
+        where
+            F: FnOnce(IoErr) -> E,
+        {
+            match self {
+                CompleteRoundError::Io(err) => CompleteRoundError::Io(err.map_err(f)),
+                CompleteRoundError::ProcessMessage(err) => CompleteRoundError::ProcessMessage(err),
+                CompleteRoundError::Other(err) => CompleteRoundError::Other(err),
             }
         }
     }
-}
 
-#[derive(Debug, Error)]
-#[error(transparent)]
-pub struct CompleteRoundBug(BugReason);
+    impl<E> IoError<E> {
+        pub(super) fn map_err<B, F>(self, f: F) -> IoError<B>
+        where
+            F: FnOnce(E) -> B,
+        {
+            match self {
+                IoError::Io(e) => IoError::Io(f(e)),
+                IoError::UnexpectedEof => IoError::UnexpectedEof,
+            }
+        }
+    }
 
-#[derive(Debug, Error)]
-enum BugReason {
-    #[error(
-        "message originates from another round: we process messages from round \
-        {expected_round}, got message from round {actual_number}"
-    )]
-    MessageFromAnotherRound {
-        expected_round: u16,
-        actual_number: u16,
-    },
-    #[error("state is incoherent, it's expected to be {expected}: {justification}")]
-    IncoherentState {
-        expected: &'static str,
-        justification: &'static str,
-    },
-    #[error("mismatched output type")]
-    MismatchedOutputType,
-    #[error("mismatched error type")]
-    MismatchedErrorType,
-    #[error("take round result")]
-    TakeRoundResult(#[source] TakeOutputError),
-}
+    macro_rules! impl_from_other_error {
+        ($($err:ident),+,) => {$(
+            impl<E1, E2> From<$err> for CompleteRoundError<E1, E2> {
+                fn from(err: $err) -> Self {
+                    Self::Other(OtherError(OtherReason::$err(err)))
+                }
+            }
+        )+};
+    }
 
-impl<E1, E2> From<BugReason> for CompleteRoundError<E1, E2> {
-    fn from(err: BugReason) -> Self {
-        CompleteRoundError::Bug(CompleteRoundBug(err))
+    impl_from_other_error! {
+        ImproperStoreImpl,
+        RoundsMisuse,
+        Bug,
     }
 }

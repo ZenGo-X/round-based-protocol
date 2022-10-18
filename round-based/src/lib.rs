@@ -6,8 +6,7 @@
 //! ## Goals
 //!
 //! * Async friendly \
-//!   Async is the most simple and efficient way of doing networking in Rust, and MPC has to deal
-//!   with networking
+//!   Async is the most simple and efficient way of doing networking in Rust
 //! * Simple, configurable \
 //!   Protocol can be carried out in a few lines of code: check out examples.
 //! * Independent of networking layer \
@@ -16,7 +15,7 @@
 //! ## Networking
 //!
 //! In order to run an MPC protocol, transport layer needs to be defined. All you have to do is to
-//! define [`Delivery`] trait which is basically a stream and a sink for receiving and sending messages.
+//! implement [`Delivery`] trait which is basically a stream and a sink for receiving and sending messages.
 //!
 //! Message delivery should meet certain criterias that differ from protocol to protocol (refer to
 //! the documentation of the protocol you're using), but usually they are:
@@ -26,18 +25,10 @@
 //!   Infrastructure.
 //! * P2P messages should be encrypted \
 //!   Only recipient should be able to learn the content of p2p message
-//! * Broadcast should be reliable \
-//!   Simply saying, when party receives a broadcast message it should be ensured that everybody else
-//!   received the same message.
-//!
-//! You can develop your own implementation of messages delivery that matches your infrastructure and
-//! needs, or use one of published general-purpose delivery implementations:
-//!
-//! * Trusted delivery _[github](https://github.com/dfnsco/trusted-delivery)_ \
-//!   Dedicated communication server is used by parties to exchange messages. Messages are authenticated,
-//!   p2p messages are encrypted. Server needs to be trusted to assume reliable broadcast (if you
-//!   don't need it, the server can be considered trustless).
-//! * We may list your implementation here, ping us!
+//! * Should have reliable broadcast channel \
+//!   Simply saying, when party receives a broadcast message over reliable channel it should be ensured that
+//!   everybody else received the same message. Protocol indicates whether outgoing message should be sent
+//!   over reliable channel, see [`.is_reliable_broadcast()`](Outgoing::is_reliable_broadcast).
 //!
 //! ## Available MPC protocols
 //!
@@ -45,7 +36,6 @@
 //!
 //! * Threshold ECDSA \
 //!   `round-based-ing` implements t-ECDSA based on GG18 paper
-//! * More protocols are coming: t-Schnorr, t-EdDSA
 //!
 
 pub mod blocking;
@@ -58,12 +48,18 @@ pub mod rounds;
 pub mod simulation;
 
 pub use self::delivery::*;
-#[doc(hidden)]
+#[doc(no_inline)]
 pub use self::{
     party::{Mpc, MpcParty},
-    rounds::store::{ProtocolMessage, RoundMessage},
+    rounds::{ProtocolMessage, RoundMessage},
 };
 
+#[doc(hidden)]
+pub mod _docs;
+
+/// Derives [`ProtocolMessage`] and [`RoundMessage`] traits
+///
+/// See [`ProtocolMessage`] docs for more details
 #[cfg(feature = "derive")]
 #[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use round_based_derive::ProtocolMessage;

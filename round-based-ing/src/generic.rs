@@ -14,7 +14,7 @@ pub async fn execute_ing_protocol<S, T, M>(
     protocol_name: &'static str,
     party: M,
     initial_state: S,
-    party_index: u16,
+    party_index: round_based::PartyIndex,
     parties: Parties,
 ) -> Result<T::FinalState, Error<T::ErrorState, M::ReceiveError, M::SendError>>
 where
@@ -157,7 +157,7 @@ fn convert_output_message_to_outgoing<M>(
                 .ok_or(UnknownDestination { recipient: index })?;
             MessageDestination::OneParty(index)
         }
-        Address::Broadcast => MessageDestination::AllParties,
+        Address::Broadcast => MessageDestination::AllParties { reliable: true },
     };
 
     Ok(Outgoing {
@@ -185,13 +185,11 @@ pub enum Error<PErr, IErr, OErr> {
     #[error("receiving next message resulted into error")]
     ReceiveNextMessage(#[source] IErr),
     #[error("received unexpected message from party {sender}")]
-    ReceivedUnexpectedMessage { sender: u16 },
+    ReceivedUnexpectedMessage { sender: round_based::PartyIndex },
     #[error("unexpected eof")]
     UnexpectedEof,
     #[error("cannot send a message")]
     SendMessage(#[source] OErr),
-    // #[error(transparent)]
-    // UnknownDestination(#[from] UnknownDestination),
     #[error(transparent)]
     UnknownSender(#[from] UnknownSender),
     #[error("bug occurred")]
@@ -207,7 +205,7 @@ struct UnknownDestination {
 #[derive(Debug, Error)]
 #[error("received message from unknown party {sender}")]
 pub struct UnknownSender {
-    sender: u16,
+    sender: round_based::PartyIndex,
 }
 
 #[derive(Debug, Error)]
@@ -358,14 +356,14 @@ impl MessageRound for ecdsa_mpc::ecdsa::messages::signing::Message {
 ///
 /// For that purposes, we provide conversion functions: [party_index_from_u16] encodes party index `i: u16`
 /// in ING [`PartyIndex`], and [party_index_to_u16] decodes party index `i: u16` from ING [`PartyIndex`].
-pub fn party_index_from_u16(index: u16) -> PartyIndex {
+pub fn party_index_from_u16(index: round_based::PartyIndex) -> PartyIndex {
     let mut index_bytes = [0u8; 32];
     index_bytes[30..].copy_from_slice(&index.to_be_bytes());
     PartyIndex(index_bytes)
 }
 
 /// Decodes party index `i: u16` from [`PartyIndex`]
-pub fn party_index_to_u16(index: &PartyIndex) -> Option<u16> {
+pub fn party_index_to_u16(index: &PartyIndex) -> Option<round_based::PartyIndex> {
     if index.0[..30] != [0u8; 30] {
         return None;
     }

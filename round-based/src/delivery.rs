@@ -12,9 +12,9 @@ pub trait Delivery<M> {
     /// Incoming delivery channel
     type Receive: Stream<Item = Result<Incoming<M>, Self::ReceiveError>> + Unpin;
     /// Error of outgoing delivery channel
-    type SendError: Error;
+    type SendError: Error + Send + Sync + 'static;
     /// Error of incoming delivery channel
-    type ReceiveError: Error;
+    type ReceiveError: Error + Send + Sync + 'static;
     /// Returns a pair of incoming and outgoing delivery channels
     fn split(self) -> (Self::Receive, Self::Send);
 }
@@ -22,8 +22,9 @@ pub trait Delivery<M> {
 /// Incoming message
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Incoming<M> {
+    pub id: MsgId,
     /// Index of a party who sent the message
-    pub sender: u16,
+    pub sender: PartyIndex,
     /// Indicates whether it's a broadcast message (meaning that this message is received by all the
     /// parties), or p2p (private message sent by `sender`)
     pub msg_type: MessageType,
@@ -34,9 +35,23 @@ pub struct Incoming<M> {
 /// Message type (broadcast or p2p)
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum MessageType {
-    Broadcast,
+    /// Message was broadcasted
+    ///
+    /// `reliable` means that it's proven that other parties received exactly the same message
+    Broadcast {
+        reliable: bool,
+    },
     P2P,
 }
+
+/// Index of party involved in the protocol
+pub type PartyIndex = u16;
+/// ID of received message
+///
+/// Can be used to retrieve extra information about message from delivery layer when needed.
+/// E.g. if malicious party detected, we need a proof that received message was sent by this
+/// party, so we would use message id to retrieve signature and original message.
+pub type MsgId = u64;
 
 impl<M> Incoming<M> {
     /// Maps `Incoming<M>` to `Incoming<T>` by applying a function to the message body
@@ -45,6 +60,7 @@ impl<M> Incoming<M> {
         F: FnOnce(M) -> T,
     {
         Incoming {
+            id: self.id,
             sender: self.sender,
             msg_type: self.msg_type,
             msg: f(self.msg),
@@ -58,6 +74,7 @@ impl<M> Incoming<M> {
         F: FnOnce(M) -> Result<T, E>,
     {
         Ok(Incoming {
+            id: self.id,
             sender: self.sender,
             msg_type: self.msg_type,
             msg: f(self.msg)?,
@@ -67,6 +84,7 @@ impl<M> Incoming<M> {
     /// Converts `&Incoming<M>` to `Incoming<&M>`
     pub fn as_ref(&self) -> Incoming<&M> {
         Incoming {
+            id: self.id,
             sender: self.sender,
             msg_type: self.msg_type,
             msg: &self.msg,
@@ -75,7 +93,11 @@ impl<M> Incoming<M> {
 
     /// Checks whether it's broadcast message
     pub fn is_broadcast(&self) -> bool {
-        matches!(self.msg_type, MessageType::Broadcast)
+        matches!(self.msg_type, MessageType::Broadcast { .. })
+    }
+
+    pub fn is_reliable_broadcast(&self) -> bool {
+        matches!(self.msg_type, MessageType::Broadcast { reliable } if reliable)
     }
 
     /// Checks whether it's p2p message
@@ -94,6 +116,30 @@ pub struct Outgoing<M> {
 }
 
 impl<M> Outgoing<M> {
+    /// Constructs an outgoing message addressed to all parties
+    pub fn broadcast(msg: M) -> Self {
+        Self {
+            recipient: MessageDestination::AllParties { reliable: false },
+            msg,
+        }
+    }
+
+    /// Constructs an outgoing message addressed to all parties through reliable broadcast channel
+    pub fn reliable_broadcast(msg: M) -> Self {
+        Self {
+            recipient: MessageDestination::AllParties { reliable: true },
+            msg,
+        }
+    }
+
+    /// Constructs an outgoing message addressed to one party
+    pub fn p2p(recipient: PartyIndex, msg: M) -> Self {
+        Self {
+            recipient: MessageDestination::OneParty(recipient),
+            msg,
+        }
+    }
+
     /// Maps `Outgoing<M>` to `Outgoing<M2>` by applying a function to the message body
     pub fn map<M2, F>(self, f: F) -> Outgoing<M2>
     where
@@ -115,12 +161,17 @@ impl<M> Outgoing<M> {
 
     /// Checks whether it's broadcast message
     pub fn is_broadcast(&self) -> bool {
-        matches!(self.recipient, MessageDestination::AllParties)
+        self.recipient.is_broadcast()
+    }
+
+    /// Checks whether it's reliable broadcast message
+    pub fn is_reliable_broadcast(&self) -> bool {
+        self.recipient.is_reliable_broadcast()
     }
 
     /// Checks whether it's p2p message
     pub fn is_p2p(&self) -> bool {
-        matches!(self.recipient, MessageDestination::OneParty(_))
+        self.recipient.is_p2p()
     }
 }
 
@@ -128,9 +179,12 @@ impl<M> Outgoing<M> {
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum MessageDestination {
     /// Broadcast message
-    AllParties,
+    AllParties {
+        /// Indicates whether this message should be sent through reliable broadcast channel
+        reliable: bool,
+    },
     /// P2P message
-    OneParty(u16),
+    OneParty(PartyIndex),
 }
 
 impl MessageDestination {
@@ -140,6 +194,10 @@ impl MessageDestination {
     }
     /// Returns `true` if it's broadcast message
     pub fn is_broadcast(&self) -> bool {
-        matches!(self, MessageDestination::AllParties)
+        matches!(self, MessageDestination::AllParties { .. })
+    }
+    /// Returns `true` if it's reliable broadcast message
+    pub fn is_reliable_broadcast(&self) -> bool {
+        matches!(self, MessageDestination::AllParties { reliable } if *reliable)
     }
 }

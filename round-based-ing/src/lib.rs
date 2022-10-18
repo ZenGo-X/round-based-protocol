@@ -19,7 +19,7 @@ use digest::generic_array::typenum::U32;
 use digest::Digest;
 use serde::{Deserialize, Serialize};
 
-use round_based::Mpc;
+use round_based::{Mpc, PartyIndex};
 
 use crate::debugging::Debugging;
 use crate::errors::*;
@@ -31,7 +31,7 @@ pub mod generic;
 
 /// Distributed key generation
 pub struct Keygen {
-    i: u16,
+    i: PartyIndex,
     min_signers: u16,
     n: u16,
     keygen_setup: Option<KeygenSetup>,
@@ -49,7 +49,7 @@ impl Keygen {
     /// * `n >= 2`
     /// * `0 <= i < n`
     /// * `2 <= min_signers <= n`
-    pub fn new(i: u16, min_signers: u16, n: u16) -> Result<Self, InvalidKeygenParameters> {
+    pub fn new(i: PartyIndex, min_signers: u16, n: u16) -> Result<Self, InvalidKeygenParameters> {
         if n < 2 {
             Err(InvalidKeygenParameters::TooFewParties { n })
         } else if !(1 < min_signers && min_signers <= n) {
@@ -175,14 +175,14 @@ impl Keygen {
 #[serde(try_from = "ecdsa_mpc::ecdsa::keygen::MultiPartyInfo")]
 pub struct KeyShare {
     share: ecdsa_mpc::ecdsa::keygen::MultiPartyInfo,
-    i: u16,
+    i: PartyIndex,
     min_signers: u16,
     n: u16,
 }
 
 impl KeyShare {
     /// Returns index of local party that was used at keygen
-    pub fn local_party_index(&self) -> u16 {
+    pub fn local_party_index(&self) -> PartyIndex {
         self.i
     }
 
@@ -247,7 +247,7 @@ impl From<KeyShare> for ecdsa_mpc::ecdsa::keygen::MultiPartyInfo {
 
 /// Signing protocol
 pub struct Signing {
-    local_party_index: u16,
+    local_party_index: PartyIndex,
     key_share: KeyShare,
     msg: Message,
     signers: Parties,
@@ -261,7 +261,7 @@ impl Signing {
     /// for details.
     pub fn new(
         key_share: KeyShare,
-        signers: &SortedVec<u16>,
+        signers: &SortedVec<PartyIndex>,
         msg: Message,
     ) -> Result<Self, InvalidSigningParameters> {
         // Check that number of signers is no less than threshold
@@ -369,7 +369,7 @@ impl Signing {
     /// Returns index of local party in the signing protocol
     ///
     /// Party's index in signing protocol is position of that party in list of signers.
-    pub fn local_party_index(&self) -> u16 {
+    pub fn local_party_index(&self) -> PartyIndex {
         self.local_party_index
     }
 }

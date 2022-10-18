@@ -8,8 +8,9 @@
 //! [`Blocking<B>`](Blocking) provides async-friendly API for executing computationally-heavy tasks
 //! in non-harmful way.  
 //!
-//! `Blocking<TokioSpawnBlocking>` executes tasks via [tokio::task::spawn_blocking]. You may define
-//! another `B` (by implementing [`SpawnBlocking`]) that, for instance, sends tasks to a thread pool.
+//! `Blocking<TokioSpawnBlocking>` executes tasks via [spawn_blocking](tokio::task::spawn_blocking).
+//! You can define another `B` (by implementing [`SpawnBlocking`]) that, for instance, sends tasks
+//! to a thread pool.
 
 use std::future::Future;
 

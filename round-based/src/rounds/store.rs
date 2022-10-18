@@ -1,32 +1,33 @@
-use std::iter;
-use thiserror::Error;
-
-use crate::{Incoming, MessageType};
+use crate::Incoming;
 
 /// Stores messages received at particular round
 ///
-/// In MPC protocol, party at every round usually needs to receive and handle up to `n` messages.
-/// It also needs to validate input in case if any party tries to cheat. All this logic should
-/// be encapsulated inside `MessagesStore` trait implementation.
+/// In MPC protocol, party at every round usually needs to receive up to `n` messages. `MessagesStore`
+/// is a container that stores messages, it knows how many messages are expected to be received,
+/// and should implement extra measures against malicious parties (e.g. prohibit message overwrite).
 ///
-/// Every received message should be handled by calling [`.add_message(msg)`] method. Once store
-/// indicates that it received all needed message (see [`.wants_more()`] method), you can obtain
-/// output by calling [`.output()`] method. Usually, output is a `Vec<_>` of received messages.
+/// ## Procedure
+/// `MessagesStore` stores received messages. Once enough messages are received, it outputs [`MessagesStore::Output`].
+/// In order to save received messages, [`.add_message(msg)`] is called. Then, [`.wants_more()`] tells whether more
+/// messages are needed to be received. If it returned `false`, then output can be retrieved by calling [`.output()`].
 ///
 /// [`.add_message(msg)`]: Self::add_message
 /// [`.wants_more()`]: Self::wants_more
 /// [`.output()`]: Self::output
+///
+/// ## Example
+/// [`RoundInput`](super::simple_store::RoundInput) is an simple messages store. Refer to its docs to see usage examples.
 pub trait MessagesStore: Sized + 'static {
     /// Message type
     type Msg;
-    /// Store output (i.e. `Vec<_>` of received messages)
+    /// Store output (e.g. `Vec<_>` of received messages)
     type Output;
     /// Store error
     type Error;
 
     /// Adds received message to the store
     ///
-    /// Returns error if message is invalid. Usually it means that party behaves maliciously.
+    /// Returns error if message cannot be processed. Usually it means that sender behaves maliciously.
     fn add_message(&mut self, msg: Incoming<Self::Msg>) -> Result<(), Self::Error>;
     /// Indicates if store expects more messages to receive
     fn wants_more(&self) -> bool;
@@ -41,41 +42,14 @@ pub trait MessagesStore: Sized + 'static {
 
 /// Message of MPC protocol
 ///
-/// MPC protocols typically consist of several rounds, so protocol message carries a number of the round
-/// plus [round message](RoundMessage)
+/// MPC protocols typically consist of several rounds, each round has differently typed message.
+/// `ProtocolMessage` and [`RoundMessage`] traits are used to examine received message: `ProtocolMessage::round`
+/// determines which round message belongs to, and then `RoundMessage` trait can be used to retrieve
+/// actual round-specific message.
 ///
-/// ## Example
-/// Protocol message can be naturally represented as an enum:
-///
+/// You should derive these traits using proc macro (requires `derive` feature):
 /// ```rust
-/// # pub struct Msg1;
-/// # pub struct Msg2;
-/// #
-/// # use round_based::ProtocolMessage;
-///
-/// pub enum Message {
-///     Round1(Msg1),
-///     Round2(Msg2),
-///     // ...
-/// }
-///
-/// impl ProtocolMessage for Message {
-///     fn round(&self) -> u16 {
-///         match self {
-///             Message::Round1(_) => 1,
-///             Message::Round2(_) => 2,
-///             // ...
-///         }
-///     }
-/// }
-/// ```
-///
-/// This implementation can be automatically derived (if you enabled `derive` feature):
-/// ```rust
-/// # pub struct Msg1;
-/// # pub struct Msg2;
-/// #
-/// # use round_based::ProtocolMessage;
+/// use round_based::ProtocolMessage;
 ///
 /// #[derive(ProtocolMessage)]
 /// pub enum Message {
@@ -83,28 +57,16 @@ pub trait MessagesStore: Sized + 'static {
 ///     Round2(Msg2),
 ///     // ...
 /// }
+///
+/// pub struct Msg1 { /* ... */ }
+/// pub struct Msg2 { /* ... */ }
 /// ```
-pub trait ProtocolMessage: Sized {
-    /// Number of round this message originates from
-    fn round(&self) -> u16;
-}
-
-/// Round message
 ///
-/// As said in [`ProtocolMessage trait`] documentation, it carries round number + round message.
-/// While `ProtocolMessage` trait only allows you to retrieve number of the round (using [`.round()`]
-/// method), this trait lets you obtain the message itself (using [from_protocol_message] constructor).
-///
-/// [`ProtocolMessage trait`]: ProtocolMessage
-/// [`.round()`]: ProtocolMessage::round
-/// [from_protocol_message]: Self::from_protocol_message
-///
-/// ## Example
-/// Protocol message can be naturally represented as an enum:
+/// This desugars into:
 ///
 /// ```rust
-/// # use round_based::rounds::store::{ProtocolMessage, RoundMessage};
-/// #
+/// use round_based::rounds::{ProtocolMessage, RoundMessage};
+///
 /// pub enum Message {
 ///     Round1(Msg1),
 ///     Round2(Msg2),
@@ -120,7 +82,7 @@ pub trait ProtocolMessage: Sized {
 ///             Message::Round1(_) => 1,
 ///             Message::Round2(_) => 2,
 ///             // ...
-///         }  
+///         }
 ///     }
 /// }
 /// impl RoundMessage<Msg1> for Message {
@@ -148,21 +110,14 @@ pub trait ProtocolMessage: Sized {
 ///     }
 /// }
 /// ```
+pub trait ProtocolMessage: Sized {
+    /// Number of round this message originates from
+    fn round(&self) -> u16;
+}
+
+/// Round message
 ///
-/// This implementation can be automatically derived (if you enabled `derive` feature):
-/// ```rust
-/// # use round_based::ProtocolMessage;
-///
-/// #[derive(ProtocolMessage)]
-/// pub enum Message {
-///     Round1(Msg1),
-///     Round2(Msg2),
-///     // ...
-/// }
-///
-/// pub struct Msg1 { /* ... */ }
-/// pub struct Msg2 { /* ... */ }
-/// ```
+/// See [`ProtocolMessage`] trait documentation.
 pub trait RoundMessage<M>: ProtocolMessage {
     /// Number of the round this message belongs to
     const ROUND: u16;
@@ -174,314 +129,4 @@ pub trait RoundMessage<M>: ProtocolMessage {
     /// Returns `Err(protocol_message)` if `protocol_message.round() != Self::ROUND`, otherwise
     /// returns `Ok(round_message)`
     fn from_protocol_message(protocol_message: Self) -> Result<M, Self>;
-}
-
-/// Simple implementation of [MessagesStore] that waits for all parties to send a message
-///
-/// Round is considered complete when the store received a message from every party. Note that the
-/// store will ignore all the messages sent by local party.
-///
-///
-/// ## Example
-/// ```rust
-/// # use round_based::rounds::store::{MessagesStore, RoundInput};
-/// # use round_based::{Incoming, MessageType};
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let mut input = RoundInput::<&'static str>::new(1, 3, MessageType::Broadcast);
-/// input.add_message(Incoming{ sender: 0, msg: "first party message", msg_type: MessageType::Broadcast })?;
-/// input.add_message(Incoming{ sender: 2, msg: "third party message", msg_type: MessageType::Broadcast })?;
-/// assert!(!input.wants_more());
-///
-/// let output = input.output().unwrap();
-/// assert_eq!(output.clone().into_vec_without_me(), ["first party message", "third party message"]);
-/// assert_eq!(output.clone().into_vec_including_me("my msg"), ["first party message", "my msg", "third party message"]);
-/// # Ok(()) }
-/// ```
-#[derive(Debug, Clone)]
-pub struct RoundInput<M> {
-    i: u16,
-    n: u16,
-    messages: Vec<Option<M>>,
-    left_messages: u16,
-    expected_msg_type: MessageType,
-}
-
-#[derive(Debug, Clone)]
-pub struct RoundMsgs<M> {
-    i: u16,
-    messages: Vec<M>,
-}
-
-impl<M> RoundInput<M> {
-    /// Constructs new messages store
-    ///
-    /// Takes index of local party `i` and amount of parties `n`
-    ///
-    /// ## Panics
-    /// Panics if `n` is less than 2 or `i` is not in the range `[0; n)`.
-    pub fn new(i: u16, n: u16, msg_type: MessageType) -> Self {
-        assert!(n >= 2);
-        assert!(i < n);
-
-        Self {
-            i,
-            n,
-            messages: iter::repeat_with(|| None)
-                .take(usize::from(n) - 1)
-                .collect(),
-            left_messages: n - 1,
-            expected_msg_type: msg_type,
-        }
-    }
-
-    /// Construct a new store for broadcast messages
-    ///
-    /// The same as `RoundInput::new(i, n, MessageType::Broadcast)`
-    pub fn broadcast(i: u16, n: u16) -> Self {
-        Self::new(i, n, MessageType::Broadcast)
-    }
-
-    /// Construct a new store for p2p messages
-    ///
-    /// The same as `RoundInput::new(i, n, MessageType::P2P)`
-    pub fn p2p(i: u16, n: u16) -> Self {
-        Self::new(i, n, MessageType::P2P)
-    }
-}
-
-impl<M> MessagesStore for RoundInput<M>
-where
-    M: 'static,
-{
-    type Msg = M;
-    type Output = RoundMsgs<M>;
-    type Error = Error;
-
-    fn add_message(&mut self, msg: Incoming<Self::Msg>) -> Result<(), Self::Error> {
-        if msg.msg_type != self.expected_msg_type {
-            return Err(Reason::MismatchedMessageType {
-                expected: self.expected_msg_type,
-                actual: msg.msg_type,
-            }
-            .into());
-        }
-        if msg.sender == self.i {
-            // Ignore own messages
-            return Ok(());
-        }
-
-        let index = if msg.sender < self.i {
-            msg.sender
-        } else {
-            msg.sender - 1
-        };
-
-        match self.messages.get_mut(usize::from(index)) {
-            Some(vacant @ None) => {
-                *vacant = Some(msg.msg);
-                self.left_messages -= 1;
-                Ok(())
-            }
-            Some(Some(_)) => {
-                Err(Reason::AttemptToOverwriteReceivedMsg { sender: msg.sender }.into())
-            }
-            None => Err(Reason::SenderIndexOutOfRange {
-                sender: msg.sender,
-                n: self.n,
-            }
-            .into()),
-        }
-    }
-
-    fn wants_more(&self) -> bool {
-        self.left_messages > 0
-    }
-
-    fn output(self) -> Result<Self::Output, Self> {
-        if self.left_messages > 0 {
-            Err(self)
-        } else {
-            Ok(RoundMsgs {
-                i: self.i,
-                messages: self.messages.into_iter().flatten().collect(),
-            })
-        }
-    }
-}
-
-impl<M> RoundMsgs<M> {
-    pub fn into_vec_without_me(self) -> Vec<M> {
-        self.messages
-    }
-
-    pub fn into_vec_including_me(mut self, my_msg: M) -> Vec<M> {
-        self.messages.insert(usize::from(self.i), my_msg);
-        self.messages
-    }
-
-    /// Returns iterator over messages with sender indexes
-    ///
-    /// Iterator yields `(sender_index, message)`
-    pub fn into_iter_indexed(self) -> impl Iterator<Item = (u16, M)> {
-        let indexes = (0..self.i).chain(self.i + 1..);
-        indexes.zip(self.messages)
-    }
-
-    /// Returns iterator over messages with sender indexes
-    ///
-    /// Iterator yields `(sender_index, &message)`
-    pub fn iter_indexed(&self) -> impl Iterator<Item = (u16, &M)> {
-        let indexes = (0..self.i).chain(self.i + 1..);
-        indexes.zip(&self.messages)
-    }
-}
-
-#[derive(Debug, Error)]
-#[error(transparent)]
-pub struct Error(#[from] Reason);
-
-#[derive(Debug, Error)]
-enum Reason {
-    #[error("party {sender} tries to overwrite message")]
-    AttemptToOverwriteReceivedMsg { sender: u16 },
-    #[error("sender index is out of range: sender={sender}, n={n}")]
-    SenderIndexOutOfRange { sender: u16, n: u16 },
-    #[error("expected message {expected:?}, got {actual:?}")]
-    MismatchedMessageType {
-        expected: MessageType,
-        actual: MessageType,
-    },
-}
-
-#[cfg(test)]
-mod tests {
-    use matches::assert_matches;
-
-    use crate::rounds::store::MessagesStore;
-    use crate::{Incoming, MessageType};
-
-    use super::{Error, Reason, RoundInput};
-
-    #[derive(Debug, Clone, PartialEq)]
-    pub struct Msg(u16);
-
-    #[test]
-    fn store_outputs_received_messages() {
-        let mut store = RoundInput::<Msg>::new(3, 5, MessageType::P2P);
-
-        let msgs = (0..5)
-            .map(|s| Incoming {
-                sender: s,
-                msg_type: MessageType::P2P,
-                msg: Msg(10 + s),
-            })
-            .filter(|incoming| incoming.sender != 3)
-            .collect::<Vec<_>>();
-
-        for msg in &msgs {
-            assert!(store.wants_more());
-            store.add_message(msg.clone()).unwrap();
-        }
-
-        assert!(!store.wants_more());
-        let received = store.output().unwrap();
-
-        // without me
-        let msgs: Vec<_> = msgs.into_iter().map(|msg| msg.msg).collect();
-        assert_eq!(received.clone().into_vec_without_me(), msgs);
-
-        // including me
-        let received = received.into_vec_including_me(Msg(13));
-        assert_eq!(received[0..3], msgs[0..3]);
-        assert_eq!(received[3], Msg(13));
-        assert_eq!(received[4..5], msgs[3..4]);
-    }
-
-    #[test]
-    fn store_returns_error_if_sender_index_is_out_of_range() {
-        let mut store = RoundInput::new(3, 5, MessageType::P2P);
-        let error = store
-            .add_message(Incoming {
-                sender: 5,
-                msg_type: MessageType::P2P,
-                msg: Msg(123),
-            })
-            .unwrap_err();
-        assert_matches!(
-            error,
-            Error(Reason::SenderIndexOutOfRange { sender, n }) if sender == 5 && n == 5
-        );
-    }
-
-    #[test]
-    fn store_returns_error_if_incoming_msg_overwrites_already_received_one() {
-        let mut store = RoundInput::new(0, 3, MessageType::P2P);
-        store
-            .add_message(Incoming {
-                sender: 1,
-                msg_type: MessageType::P2P,
-                msg: Msg(11),
-            })
-            .unwrap();
-        let error = store
-            .add_message(Incoming {
-                sender: 1,
-                msg_type: MessageType::P2P,
-                msg: Msg(112),
-            })
-            .unwrap_err();
-        assert_matches!(error, Error(Reason::AttemptToOverwriteReceivedMsg { sender }) if sender == 1);
-        store
-            .add_message(Incoming {
-                sender: 2,
-                msg_type: MessageType::P2P,
-                msg: Msg(22),
-            })
-            .unwrap();
-
-        let output = store.output().unwrap().into_vec_without_me();
-        assert_eq!(output, [Msg(11), Msg(22)]);
-    }
-
-    #[test]
-    fn store_returns_error_if_tried_to_output_before_receiving_enough_messages() {
-        let mut store = RoundInput::<Msg>::new(3, 5, MessageType::P2P);
-
-        let msgs = (0..5)
-            .map(|s| Incoming {
-                sender: s,
-                msg_type: MessageType::P2P,
-                msg: Msg(10 + s),
-            })
-            .filter(|incoming| incoming.sender != 3);
-
-        for msg in msgs {
-            assert!(store.wants_more());
-            store = store.output().unwrap_err();
-
-            store.add_message(msg).unwrap();
-        }
-
-        let _ = store.output().unwrap();
-    }
-
-    #[test]
-    fn store_returns_error_if_message_type_mismatched() {
-        let mut store = RoundInput::<Msg>::new(3, 5, MessageType::P2P);
-
-        let err = store
-            .add_message(Incoming {
-                sender: 0,
-                msg_type: MessageType::Broadcast,
-                msg: Msg(1),
-            })
-            .unwrap_err();
-        assert_matches!(
-            err,
-            Error(Reason::MismatchedMessageType {
-                expected: MessageType::P2P,
-                actual: MessageType::Broadcast
-            })
-        );
-    }
 }

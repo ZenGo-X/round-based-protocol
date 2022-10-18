@@ -2,14 +2,13 @@ use futures::SinkExt;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{digest::Output, Digest, Sha256};
+use thiserror::Error;
 
 use round_based::rounds::{
-    store::{Error as StoreError, RoundInput},
+    simple_store::{RoundInput, RoundInputError},
     CompleteRoundError, Rounds,
 };
-use round_based::{
-    Delivery, MessageDestination, MessageType, Mpc, MpcParty, Outgoing, ProtocolMessage,
-};
+use round_based::{Delivery, Mpc, MpcParty, MsgId, Outgoing, PartyIndex, ProtocolMessage};
 
 #[derive(Clone, Debug, PartialEq, ProtocolMessage, Serialize, Deserialize)]
 pub enum Msg {
@@ -29,7 +28,7 @@ pub struct DecommitMsg {
 
 pub async fn protocol_of_random_generation<R, M>(
     party: M,
-    i: u16,
+    i: PartyIndex,
     n: u16,
     mut rng: R,
 ) -> Result<[u8; 32], Error<M::ReceiveError, M::SendError>>
@@ -42,8 +41,8 @@ where
 
     // Define rounds
     let mut rounds = Rounds::<Msg>::builder();
-    let round1 = rounds.add_round(RoundInput::<CommitMsg>::new(i, n, MessageType::Broadcast));
-    let round2 = rounds.add_round(RoundInput::<DecommitMsg>::new(i, n, MessageType::Broadcast));
+    let round1 = rounds.add_round(RoundInput::<CommitMsg>::reliable_broadcast(i, n));
+    let round2 = rounds.add_round(RoundInput::<DecommitMsg>::broadcast(i, n));
     let mut rounds = rounds.listen(incoming);
 
     // --- The Protocol ---
@@ -55,10 +54,9 @@ where
     // 2. Commit local randomness (broadcast m=sha256(randomness))
     let commitment = Sha256::digest(&local_randomness);
     outgoing
-        .send(Outgoing {
-            recipient: MessageDestination::AllParties,
-            msg: Msg::CommitMsg(CommitMsg { commitment }),
-        })
+        .send(Outgoing::reliable_broadcast(Msg::CommitMsg(CommitMsg {
+            commitment,
+        })))
         .await
         .map_err(Error::Round1Send)?;
 
@@ -66,17 +64,13 @@ where
     let commitments = rounds
         .complete(round1)
         .await
-        .map_err(Error::Round1Receive)?
-        .into_vec_including_me(CommitMsg { commitment });
+        .map_err(Error::Round1Receive)?;
 
     // 4. Open local randomness
     outgoing
-        .send(Outgoing {
-            recipient: MessageDestination::AllParties,
-            msg: Msg::DecommitMsg(DecommitMsg {
-                randomness: local_randomness,
-            }),
-        })
+        .send(Outgoing::broadcast(Msg::DecommitMsg(DecommitMsg {
+            randomness: local_randomness,
+        })))
         .await
         .map_err(Error::Round2Send)?;
 
@@ -84,17 +78,21 @@ where
     let randomness = rounds
         .complete(round2)
         .await
-        .map_err(Error::Round2Receive)?
-        .into_vec_including_me(DecommitMsg {
-            randomness: local_randomness,
-        });
+        .map_err(Error::Round2Receive)?;
 
     let mut guilty_parties = vec![];
-    let mut output = [0u8; 32];
-    for ((i, commit), decommit) in (0..).zip(commitments).zip(randomness) {
+    let mut output = local_randomness;
+    for ((com_msg_id, party_i, commit), (decom_msg_id, _party_i, decommit)) in commitments
+        .into_iter_indexed()
+        .zip(randomness.into_iter_indexed())
+    {
         let commitment_expected = Sha256::digest(&decommit.randomness);
         if commit.commitment != commitment_expected {
-            guilty_parties.push(i);
+            guilty_parties.push(Blame {
+                guilty_party: party_i,
+                commitment_msg: com_msg_id,
+                decommitment_msg: decom_msg_id,
+            });
             continue;
         }
 
@@ -111,19 +109,26 @@ where
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Error)]
 pub enum Error<RecvErr, SendErr> {
     #[error("send a message at round 1")]
     Round1Send(#[source] SendErr),
     #[error("receive messages at round 1")]
-    Round1Receive(#[source] CompleteRoundError<StoreError, RecvErr>),
+    Round1Receive(#[source] CompleteRoundError<RoundInputError, RecvErr>),
     #[error("send a message at round 2")]
     Round2Send(#[source] SendErr),
     #[error("receive messages at round 2")]
-    Round2Receive(#[source] CompleteRoundError<StoreError, RecvErr>),
+    Round2Receive(#[source] CompleteRoundError<RoundInputError, RecvErr>),
 
     #[error("malicious parties: {guilty_parties:?}")]
-    PartiesOpenedRandomnessDoesntMatchCommitment { guilty_parties: Vec<u16> },
+    PartiesOpenedRandomnessDoesntMatchCommitment { guilty_parties: Vec<Blame> },
+}
+
+#[derive(Debug)]
+pub struct Blame {
+    pub guilty_party: PartyIndex,
+    pub commitment_msg: MsgId,
+    pub decommitment_msg: MsgId,
 }
 
 #[cfg(test)]

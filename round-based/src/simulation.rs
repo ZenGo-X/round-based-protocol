@@ -6,7 +6,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use round_based::Mpc;
+//! use round_based::{Mpc, PartyIndex};
 //! use round_based::simulation::Simulation;
 //! use futures::future::try_join_all;
 //!
@@ -14,7 +14,7 @@
 //! # type Randomness = [u8; 32];
 //! # type Msg = ();
 //! // Any MPC protocol you want to test
-//! pub async fn protocol_of_random_generation<M>(party: M, i: u16, n: u16) -> Result<Randomness>
+//! pub async fn protocol_of_random_generation<M>(party: M, i: PartyIndex, n: u16) -> Result<Randomness>
 //! where M: Mpc<ProtocolMessage = Msg>
 //! {
 //!     // ...
@@ -41,6 +41,8 @@
 //! ```
 
 use std::pin::Pin;
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::{ready, Sink, Stream};
@@ -48,12 +50,13 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
 use crate::delivery::{Delivery, Incoming, Outgoing};
-use crate::{MessageDestination, MessageType, MpcParty};
+use crate::{MessageDestination, MessageType, MpcParty, MsgId, PartyIndex};
 
 /// Multiparty protocol simulator
 pub struct Simulation<M> {
     channel: broadcast::Sender<Outgoing<Incoming<M>>>,
-    next_party_idx: u16,
+    next_party_idx: PartyIndex,
+    next_msg_id: Arc<NextMessageId>,
 }
 
 impl<M> Simulation<M>
@@ -62,10 +65,7 @@ where
 {
     /// Instantiates a new simulation
     pub fn new() -> Self {
-        Self {
-            channel: broadcast::channel(500).0,
-            next_party_idx: 0,
-        }
+        Self::with_capacity(500)
     }
 
     /// Instantiates a new simulation with given capacity
@@ -79,24 +79,13 @@ where
         Self {
             channel: broadcast::channel(capacity).0,
             next_party_idx: 0,
+            next_msg_id: Default::default(),
         }
     }
 
     /// Adds new party to the network
     pub fn add_party(&mut self) -> MpcParty<M, MockedDelivery<M>> {
-        let local_party_idx = self.next_party_idx;
-        self.next_party_idx += 1;
-
-        MpcParty::connected(MockedDelivery {
-            incoming: MockedIncoming {
-                local_party_idx,
-                receiver: BroadcastStream::new(self.channel.subscribe()),
-            },
-            outgoing: MockedOutgoing {
-                local_party_idx,
-                sender: self.channel.clone(),
-            },
-        })
+        MpcParty::connected(self.connect_new_party())
     }
 
     /// Connects new party to the network
@@ -115,6 +104,7 @@ where
             outgoing: MockedOutgoing {
                 local_party_idx,
                 sender: self.channel.clone(),
+                next_msg_id: self.next_msg_id.clone(),
             },
         }
     }
@@ -151,7 +141,7 @@ where
 
 /// Incoming channel of mocked network
 pub struct MockedIncoming<M> {
-    local_party_idx: u16,
+    local_party_idx: PartyIndex,
     receiver: BroadcastStream<Outgoing<Incoming<M>>>,
 }
 
@@ -180,8 +170,9 @@ where
 
 /// Outgoing channel of mocked network
 pub struct MockedOutgoing<M> {
-    local_party_idx: u16,
+    local_party_idx: PartyIndex,
     sender: broadcast::Sender<Outgoing<Incoming<M>>>,
+    next_msg_id: Arc<NextMessageId>,
 }
 
 impl<M> Sink<Outgoing<M>> for MockedOutgoing<M> {
@@ -192,15 +183,15 @@ impl<M> Sink<Outgoing<M>> for MockedOutgoing<M> {
     }
 
     fn start_send(self: Pin<&mut Self>, msg: Outgoing<M>) -> Result<(), Self::Error> {
-        let is_broadcast = msg.is_broadcast();
+        let msg_type = match msg.recipient {
+            MessageDestination::AllParties { reliable } => MessageType::Broadcast { reliable },
+            MessageDestination::OneParty(_) => MessageType::P2P,
+        };
         self.sender
             .send(msg.map(|m| Incoming {
+                id: self.next_msg_id.next(),
                 sender: self.local_party_idx,
-                msg_type: if is_broadcast {
-                    MessageType::Broadcast
-                } else {
-                    MessageType::P2P
-                },
+                msg_type,
                 msg: m,
             }))
             .map_err(|_| broadcast::error::SendError(()))?;
@@ -213,5 +204,14 @@ impl<M> Sink<Outgoing<M>> for MockedOutgoing<M> {
 
     fn poll_close(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
+    }
+}
+
+#[derive(Default)]
+struct NextMessageId(AtomicU64);
+
+impl NextMessageId {
+    pub fn next(&self) -> MsgId {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 }

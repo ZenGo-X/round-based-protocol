@@ -1,7 +1,7 @@
 use crate::blocking::{SpawnBlocking, TaskResult};
 use tokio::task::{spawn_blocking, JoinError, JoinHandle};
 
-/// Default implementation of [`SpawnBlocking`] that spawns tasks via [tokio::task::spawn_blocking]
+/// Default implementation of [`SpawnBlocking`] that spawns tasks via [spawn_blocking](tokio::task::spawn_blocking)
 #[derive(Debug, Clone, Default)]
 pub struct TokioSpawnBlocking;
 

@@ -5,7 +5,7 @@ use test_case::test_case;
 
 use sorted_vec::SortedVec;
 
-use round_based::simulation::Simulation;
+use round_based::{simulation::Simulation, PartyIndex};
 use round_based_ing::{KeyShare, Keygen, KeygenSetup, Message, Signing, SigningMsg};
 
 lazy_static::lazy_static! {
@@ -91,7 +91,7 @@ async fn simulate_signing(
     signers: &[KeyShare],
 ) -> anyhow::Result<secp256k1::Signature> {
     // Deduce list of signers indexes
-    let signers_indexes: SortedVec<u16> = signers
+    let signers_indexes: SortedVec<PartyIndex> = signers
         .iter()
         .map(|signer| signer.local_party_index())
         .collect::<Vec<_>>()

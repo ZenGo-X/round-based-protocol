@@ -1,3 +1,35 @@
+//! Party of MPC protocol
+//!
+//! [`MpcParty`] is party of MPC protocol, connected to network, ready to start carrying out the protocol.
+//!
+//! ```rust
+//! use round_based::{Mpc, MpcParty, Delivery, PartyIndex};
+//!
+//! # struct KeygenMsg;
+//! # struct KeyShare;
+//! # struct Error;
+//! # type Result<T> = std::result::Result<T, Error>;
+//! # async fn doc() -> Result<()> {
+//! async fn keygen<M>(party: M, i: PartyIndex, n: u16) -> Result<KeyShare>
+//! where
+//!     M: Mpc<ProtocolMessage = KeygenMsg>
+//! {
+//!     // ...
+//! # unimplemented!()
+//! }
+//! async fn connect() -> impl Delivery<KeygenMsg> {
+//!     // ...
+//! # round_based::_docs::fake_delivery()
+//! }
+//!
+//! let delivery = connect().await;
+//! let party = MpcParty::connected(delivery);
+//!
+//! # let (i, n) = (1, 3);
+//! let keyshare = keygen(party, i, n).await?;
+//! # Ok(()) }
+//! ```
+
 use std::error::Error;
 
 use phantom_type::PhantomType;
@@ -5,6 +37,39 @@ use phantom_type::PhantomType;
 use crate::blocking::{Blocking, SpawnBlocking, TokioSpawnBlocking};
 use crate::delivery::Delivery;
 
+/// Party of MPC protocol (trait)
+///
+/// [`MpcParty`] is the only struct that implement this trait. Motivation to have this trait is to fewer amount of
+/// generic bounds that are needed to be specified.
+///
+/// Typical usage of this trait when implementing MPC protocol:
+///
+/// ```rust
+/// use round_based::{Mpc, MpcParty, PartyIndex};
+///
+/// # struct Msg;
+/// async fn keygen<M>(party: M, i: PartyIndex, n: u16)
+/// where
+///     M: Mpc<ProtocolMessage = Msg>
+/// {
+///     let MpcParty{ delivery, .. } = party.into_party();
+///     // ...
+/// }
+/// ```
+///
+/// If we didn't have this trait, generics would be less readable:
+/// ```rust
+/// use round_based::{MpcParty, Delivery, blocking::SpawnBlocking, PartyIndex};
+///
+/// # struct Msg;
+/// async fn keygen<D, B>(party: MpcParty<Msg, D, B>, i: PartyIndex, n: u16)
+/// where
+///     D: Delivery<Msg>,
+///     B: SpawnBlocking
+/// {
+///     // ...
+/// }
+/// ```
 pub trait Mpc: internal::Sealed {
     type ProtocolMessage;
     type Delivery: Delivery<
@@ -14,8 +79,8 @@ pub trait Mpc: internal::Sealed {
     >;
     type SpawnBlocking: SpawnBlocking;
 
-    type SendError: Error;
-    type ReceiveError: Error;
+    type SendError: Error + Send + Sync + 'static;
+    type ReceiveError: Error + Send + Sync + 'static;
 
     fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::SpawnBlocking>;
 }
@@ -24,6 +89,7 @@ mod internal {
     pub trait Sealed {}
 }
 
+/// Party of MPC protocol
 #[non_exhaustive]
 pub struct MpcParty<M, D, B = TokioSpawnBlocking> {
     pub delivery: D,
@@ -74,8 +140,8 @@ impl<M, D, B> internal::Sealed for MpcParty<M, D, B> {}
 impl<M, D, B> Mpc for MpcParty<M, D, B>
 where
     D: Delivery<M>,
-    D::SendError: Error,
-    D::ReceiveError: Error,
+    D::SendError: Error + Send + Sync + 'static,
+    D::ReceiveError: Error + Send + Sync + 'static,
     B: SpawnBlocking,
 {
     type ProtocolMessage = M;

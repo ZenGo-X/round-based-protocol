@@ -26,7 +26,7 @@ pub enum InvalidKeygenParameters {
     )]
     IncorrectThreshold { min_signers: u16, n: u16 },
     #[error("index of local party i={i} should be less than number of parties n={n}")]
-    IncorrectPartyIndex { i: u16, n: u16 },
+    IncorrectPartyIndex { i: round_based::PartyIndex, n: u16 },
 }
 
 #[derive(Debug, Error)]
@@ -95,7 +95,9 @@ pub enum InvalidSigningParameters {
     #[error(
         "party {party_index} didn't take part in key generation, but appears in list of signers"
     )]
-    UnknownParty { party_index: u16 },
+    UnknownParty {
+        party_index: round_based::PartyIndex,
+    },
     /// Local party is not in the list of signers
     #[error("local party is not in the list of signers")]
     PartyNotInSignersList,
