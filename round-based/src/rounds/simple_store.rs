@@ -203,26 +203,24 @@ impl<M> RoundMsgs<M> {
 
     /// Returns iterator over messages with sender indexes
     ///
-    /// Iterator yields `(msg_id, sender_index, message)`
-    pub fn into_iter_indexed(self) -> impl Iterator<Item = (MsgId, PartyIndex, M)> {
-        let indexes = (0..self.i).chain(self.i + 1..);
-        self.ids
-            .into_iter()
-            .zip(indexes)
+    /// Iterator yields `(sender_index, msg_id, message)`
+    pub fn into_iter_indexed(self) -> impl Iterator<Item = (PartyIndex, MsgId, M)> {
+        let parties_indexes = (0..self.i).chain(self.i + 1..);
+        parties_indexes
+            .zip(self.ids.into_iter())
             .zip(self.messages)
-            .map(|((id, party_ind), msg)| (id, party_ind, msg))
+            .map(|((party_ind, msg_id), msg)| (party_ind, msg_id, msg))
     }
 
     /// Returns iterator over messages with sender indexes
     ///
-    /// Iterator yields `(msg_id, sender_index, &message)`
-    pub fn iter_indexed(&self) -> impl Iterator<Item = (MsgId, PartyIndex, &M)> {
-        let indexes = (0..self.i).chain(self.i + 1..);
-        self.ids
-            .iter()
-            .zip(indexes)
+    /// Iterator yields `(sender_index, msg_id, &message)`
+    pub fn iter_indexed(&self) -> impl Iterator<Item = (PartyIndex, MsgId, &M)> {
+        let parties_indexes = (0..self.i).chain(self.i + 1..);
+        parties_indexes
+            .zip(&self.ids)
             .zip(&self.messages)
-            .map(|((id, party_ind), msg)| (*id, party_ind, msg))
+            .map(|((party_ind, msg_id), msg)| (party_ind, *msg_id, msg))
     }
 }
 

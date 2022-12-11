@@ -82,7 +82,7 @@ where
 
     let mut guilty_parties = vec![];
     let mut output = local_randomness;
-    for ((com_msg_id, party_i, commit), (decom_msg_id, _party_i, decommit)) in commitments
+    for ((party_i, com_msg_id, commit), (_, decom_msg_id, decommit)) in commitments
         .into_iter_indexed()
         .zip(randomness.into_iter_indexed())
     {
