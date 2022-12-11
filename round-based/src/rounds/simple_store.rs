@@ -201,6 +201,11 @@ impl<M> RoundMsgs<M> {
         self.messages
     }
 
+    /// Returns iterator over messages
+    pub fn iter(&self) -> impl Iterator<Item = &M> {
+        self.messages.iter()
+    }
+
     /// Returns iterator over messages with sender indexes
     ///
     /// Iterator yields `(sender_index, msg_id, message)`
