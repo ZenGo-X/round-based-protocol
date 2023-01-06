@@ -192,6 +192,18 @@ impl<M> RoundMsgs<M> {
         self.messages.iter()
     }
 
+    /// Returns iterator over received messages plus party's own message
+    ///
+    /// Similar to [`.iter()`](Self::iter), but inserts `my_msg` at position `i`. Thus, i-th message in the
+    /// iterator is the message received from party `i`.
+    pub fn iter_including_me<'m>(&'m self, my_msg: &'m M) -> impl Iterator<Item = &'m M> {
+        self.messages
+            .iter()
+            .take(usize::from(self.i))
+            .chain(iter::once(my_msg))
+            .chain(self.messages.iter().skip(usize::from(self.i)))
+    }
+
     /// Returns iterator over messages with sender indexes
     ///
     /// Iterator yields `(sender_index, msg_id, message)`
