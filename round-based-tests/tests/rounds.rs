@@ -8,8 +8,8 @@ use rand::SeedableRng;
 use random_generation_protocol::{
     protocol_of_random_generation, CommitMsg, DecommitMsg, Error, Msg,
 };
-use round_based::rounds::errors::IoError;
-use round_based::rounds::{simple_store::RoundInput, CompleteRoundError, Rounds};
+use round_based::rounds_router::errors::IoError;
+use round_based::rounds_router::{simple_store::RoundInput, CompleteRoundError, RoundsRouter};
 use round_based::{Delivery, Incoming, MessageType, MpcParty, Outgoing};
 
 const PARTY0_SEED: [u8; 32] =
@@ -33,7 +33,7 @@ async fn random_generation_completes() {
         Ok::<_, Infallible>(Incoming {
             id: 0,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY1_COMMITMENT.into(),
             }),
@@ -41,7 +41,7 @@ async fn random_generation_completes() {
         Ok(Incoming {
             id: 1,
             sender: 2,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY2_COMMITMENT.into(),
             }),
@@ -49,7 +49,7 @@ async fn random_generation_completes() {
         Ok(Incoming {
             id: 2,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY1_RANDOMNESS,
             }),
@@ -57,7 +57,7 @@ async fn random_generation_completes() {
         Ok(Incoming {
             id: 3,
             sender: 2,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY2_RANDOMNESS,
             }),
@@ -75,7 +75,7 @@ async fn protocol_terminates_with_error_if_party_tries_to_overwrite_message_at_r
         Ok::<_, Infallible>(Incoming {
             id: 0,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY1_COMMITMENT.into(),
             }),
@@ -83,7 +83,7 @@ async fn protocol_terminates_with_error_if_party_tries_to_overwrite_message_at_r
         Ok(Incoming {
             id: 1,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY_OVERWRITES.into(),
             }),
@@ -103,7 +103,7 @@ async fn protocol_terminates_with_error_if_party_tries_to_overwrite_message_at_r
         Ok::<_, Infallible>(Incoming {
             id: 0,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY1_COMMITMENT.into(),
             }),
@@ -111,7 +111,7 @@ async fn protocol_terminates_with_error_if_party_tries_to_overwrite_message_at_r
         Ok(Incoming {
             id: 1,
             sender: 2,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY2_COMMITMENT.into(),
             }),
@@ -119,7 +119,7 @@ async fn protocol_terminates_with_error_if_party_tries_to_overwrite_message_at_r
         Ok(Incoming {
             id: 2,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY1_RANDOMNESS,
             }),
@@ -127,7 +127,7 @@ async fn protocol_terminates_with_error_if_party_tries_to_overwrite_message_at_r
         Ok(Incoming {
             id: 3,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY_OVERWRITES,
             }),
@@ -146,7 +146,7 @@ async fn protocol_terminates_if_received_message_from_unknown_sender_at_round1()
     let output = run_protocol([Ok::<_, Infallible>(Incoming {
         id: 0,
         sender: 3,
-        msg_type: MessageType::Broadcast { reliable: true },
+        msg_type: MessageType::Broadcast,
         msg: Msg::CommitMsg(CommitMsg {
             commitment: PARTY1_COMMITMENT.into(),
         }),
@@ -165,7 +165,7 @@ async fn protocol_ignores_message_that_goes_to_completed_round() {
         Ok::<_, Infallible>(Incoming {
             id: 0,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY1_COMMITMENT.into(),
             }),
@@ -173,7 +173,7 @@ async fn protocol_ignores_message_that_goes_to_completed_round() {
         Ok(Incoming {
             id: 1,
             sender: 2,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY2_COMMITMENT.into(),
             }),
@@ -181,7 +181,7 @@ async fn protocol_ignores_message_that_goes_to_completed_round() {
         Ok(Incoming {
             id: 2,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY_OVERWRITES.into(),
             }),
@@ -189,7 +189,7 @@ async fn protocol_ignores_message_that_goes_to_completed_round() {
         Ok(Incoming {
             id: 3,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY1_RANDOMNESS,
             }),
@@ -197,7 +197,7 @@ async fn protocol_ignores_message_that_goes_to_completed_round() {
         Ok(Incoming {
             id: 4,
             sender: 2,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY2_RANDOMNESS,
             }),
@@ -215,7 +215,7 @@ async fn protocol_ignores_io_error_if_it_is_completed() {
         Ok(Incoming {
             id: 0,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY1_COMMITMENT.into(),
             }),
@@ -223,7 +223,7 @@ async fn protocol_ignores_io_error_if_it_is_completed() {
         Ok(Incoming {
             id: 1,
             sender: 2,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY2_COMMITMENT.into(),
             }),
@@ -231,7 +231,7 @@ async fn protocol_ignores_io_error_if_it_is_completed() {
         Ok(Incoming {
             id: 2,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY1_RANDOMNESS,
             }),
@@ -239,7 +239,7 @@ async fn protocol_ignores_io_error_if_it_is_completed() {
         Ok(Incoming {
             id: 3,
             sender: 2,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY2_RANDOMNESS,
             }),
@@ -258,7 +258,7 @@ async fn protocol_terminates_with_error_if_io_error_happens_at_round2() {
         Ok(Incoming {
             id: 0,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY1_COMMITMENT.into(),
             }),
@@ -266,7 +266,7 @@ async fn protocol_terminates_with_error_if_io_error_happens_at_round2() {
         Ok(Incoming {
             id: 1,
             sender: 2,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY2_COMMITMENT.into(),
             }),
@@ -274,7 +274,7 @@ async fn protocol_terminates_with_error_if_io_error_happens_at_round2() {
         Ok(Incoming {
             id: 2,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY1_RANDOMNESS,
             }),
@@ -283,7 +283,7 @@ async fn protocol_terminates_with_error_if_io_error_happens_at_round2() {
         Ok(Incoming {
             id: 3,
             sender: 2,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY2_RANDOMNESS,
             }),
@@ -301,7 +301,7 @@ async fn protocol_terminates_with_error_if_io_error_happens_at_round1() {
         Ok(Incoming {
             id: 0,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY1_COMMITMENT.into(),
             }),
@@ -309,7 +309,7 @@ async fn protocol_terminates_with_error_if_io_error_happens_at_round1() {
         Ok(Incoming {
             id: 1,
             sender: 2,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY2_COMMITMENT.into(),
             }),
@@ -317,7 +317,7 @@ async fn protocol_terminates_with_error_if_io_error_happens_at_round1() {
         Ok(Incoming {
             id: 2,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY1_RANDOMNESS,
             }),
@@ -325,7 +325,7 @@ async fn protocol_terminates_with_error_if_io_error_happens_at_round1() {
         Ok(Incoming {
             id: 3,
             sender: 2,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY2_RANDOMNESS,
             }),
@@ -342,7 +342,7 @@ async fn protocol_terminates_with_error_if_unexpected_eof_happens_at_round2() {
         Ok::<_, Infallible>(Incoming {
             id: 0,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY1_COMMITMENT.into(),
             }),
@@ -350,7 +350,7 @@ async fn protocol_terminates_with_error_if_unexpected_eof_happens_at_round2() {
         Ok(Incoming {
             id: 1,
             sender: 2,
-            msg_type: MessageType::Broadcast { reliable: true },
+            msg_type: MessageType::Broadcast,
             msg: Msg::CommitMsg(CommitMsg {
                 commitment: PARTY2_COMMITMENT.into(),
             }),
@@ -358,7 +358,7 @@ async fn protocol_terminates_with_error_if_unexpected_eof_happens_at_round2() {
         Ok(Incoming {
             id: 2,
             sender: 1,
-            msg_type: MessageType::Broadcast { reliable: false },
+            msg_type: MessageType::Broadcast,
             msg: Msg::DecommitMsg(DecommitMsg {
                 randomness: PARTY1_RANDOMNESS,
             }),
@@ -377,7 +377,7 @@ async fn protocol_terminates_with_error_if_unexpected_eof_happens_at_round2() {
 #[tokio::test]
 async fn all_non_completed_rounds_are_terminated_with_unexpected_eof_error_if_incoming_channel_suddenly_closed(
 ) {
-    let mut rounds = Rounds::builder();
+    let mut rounds = RoundsRouter::builder();
     let round1 = rounds.add_round(RoundInput::<CommitMsg>::new(0, 3, MessageType::P2P));
     let round2 = rounds.add_round(RoundInput::<DecommitMsg>::new(0, 3, MessageType::P2P));
     let mut rounds = rounds.listen(stream::empty::<Result<Incoming<Msg>, Infallible>>());

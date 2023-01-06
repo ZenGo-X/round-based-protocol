@@ -1,13 +1,13 @@
-//! Incoming messages processing
+//! Routes incoming MPC messages between rounds
 //!
-//! [`Rounds`] is an essential building block of MPC protocol, it processes incoming messages, groups
+//! [`RoundsRouter`] is an essential building block of MPC protocol, it processes incoming messages, groups
 //! them by rounds, and provides convenient API for retrieving received messages at certain round.
 //!
 //! ## Example
 //!
 //! ```rust
 //! use round_based::{Mpc, MpcParty, ProtocolMessage, Delivery, PartyIndex};
-//! use round_based::rounds::{Rounds, simple_store::{RoundInput, RoundMsgs}};
+//! use round_based::rounds_router::{RoundsRouter, simple_store::{RoundInput, RoundMsgs}};
 //!
 //! #[derive(ProtocolMessage)]
 //! pub enum Msg {
@@ -27,7 +27,7 @@
 //!     let (incomings, _outgoings) = delivery.split();
 //!
 //!     // Build `Rounds`
-//!     let mut rounds = Rounds::builder();
+//!     let mut rounds = RoundsRouter::builder();
 //!     let round1 = rounds.add_round(RoundInput::<Msg1>::broadcast(i, n));
 //!     let round2 = rounds.add_round(RoundInput::<Msg2>::p2p(i, n));
 //!     let mut rounds = rounds.listen(incomings);
@@ -70,26 +70,31 @@ mod store;
 /// Routes received messages between protocol rounds
 ///
 /// See [module level](self) documentation to learn more about it.
-pub struct Rounds<M, S = ()> {
+pub struct RoundsRouter<M, S = ()> {
     incomings: S,
     rounds: HashMap<u16, Option<Box<dyn ProcessRoundMessage<Msg = M> + Send>>>,
 }
 
-impl<M: ProtocolMessage + 'static> Rounds<M> {
-    pub fn builder() -> RoundsBuilder<M> {
-        RoundsBuilder::new()
+impl<M: ProtocolMessage + 'static> RoundsRouter<M> {
+    /// Instantiates [`RoundsRouterBuilder`]
+    pub fn builder() -> RoundsRouterBuilder<M> {
+        RoundsRouterBuilder::new()
     }
 }
 
-impl<M, S, E> Rounds<M, S>
+impl<M, S, E> RoundsRouter<M, S>
 where
     M: ProtocolMessage,
     S: Stream<Item = Result<Incoming<M>, E>> + Unpin,
 {
+    /// Completes specified round
+    ///
+    /// Waits until all messages at specified round are received. Returns received
+    /// messages if round is successfully completed, or error otherwise.
     #[inline(always)]
     pub async fn complete<R>(
         &mut self,
-        _round: Round<R>,
+        round: Round<R>,
     ) -> Result<R::Output, CompleteRoundError<R::Error, E>>
     where
         R: MessagesStore,
@@ -99,7 +104,7 @@ where
         let span = trace_span!("Round", n = round_number);
         debug!(parent: &span, "pending round to complete");
 
-        match self.complete_with_span::<R>(&span).await {
+        match self.complete_with_span(&span, round).await {
             Ok(output) => {
                 trace!(parent: &span, "round successfully completed");
                 Ok(output)
@@ -114,6 +119,7 @@ where
     async fn complete_with_span<R>(
         &mut self,
         span: &Span,
+        _round: Round<R>,
     ) -> Result<R::Output, CompleteRoundError<R::Error, E>>
     where
         R: MessagesStore,
@@ -223,21 +229,28 @@ where
     }
 }
 
-/// Builds [`Rounds`]
-pub struct RoundsBuilder<M> {
+/// Builds [`RoundsRouter`]
+pub struct RoundsRouterBuilder<M> {
     rounds: HashMap<u16, Option<Box<dyn ProcessRoundMessage<Msg = M> + Send>>>,
 }
 
-impl<M> RoundsBuilder<M>
+impl<M> RoundsRouterBuilder<M>
 where
     M: ProtocolMessage + 'static,
 {
+    /// Constructs [`RoundsRouterBuilder`]
+    ///
+    /// Alias to [`RoundsRouter::builder`]
     pub fn new() -> Self {
         Self {
             rounds: HashMap::new(),
         }
     }
 
+    /// Registers new round
+    ///
+    /// ## Panics
+    /// Panics if round `R` was already registered
     pub fn add_round<R>(&mut self, message_store: R) -> Round<R>
     where
         R: MessagesStore + Send + 'static,
@@ -260,11 +273,14 @@ where
         }
     }
 
-    pub fn listen<S, E>(self, incomings: S) -> Rounds<M, S>
+    /// Builds [`RoundsRouter`]
+    ///
+    /// Takes a stream of incoming messages which will be routed between registered rounds
+    pub fn listen<S, E>(self, incomings: S) -> RoundsRouter<M, S>
     where
         S: Stream<Item = Result<Incoming<M>, E>>,
     {
-        Rounds {
+        RoundsRouter {
             incomings,
             rounds: self.rounds,
         }
@@ -273,7 +289,7 @@ where
 
 /// A round of MPC protocol
 ///
-/// `Round` can be used to retrieve messages received at this round by calling [`Rounds::complete`]. See
+/// `Round` can be used to retrieve messages received at this round by calling [`RoundsRouter::complete`]. See
 /// [module level](self) documentation to see usage.
 pub struct Round<S: MessagesStore> {
     _ph: PhantomType<S>,
@@ -456,8 +472,10 @@ pub mod errors {
     /// Error indicating that receiving next message resulted into i/o error
     #[derive(Error, Debug)]
     pub enum IoError<E> {
+        /// I/O error
         #[error("i/o error")]
         Io(#[source] E),
+        /// Encountered unexpected EOF
         #[error("unexpected eof")]
         UnexpectedEof,
     }

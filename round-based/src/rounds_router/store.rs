@@ -65,7 +65,7 @@ pub trait MessagesStore: Sized + 'static {
 /// This desugars into:
 ///
 /// ```rust
-/// use round_based::rounds::{ProtocolMessage, RoundMessage};
+/// use round_based::rounds_router::{ProtocolMessage, RoundMessage};
 ///
 /// pub enum Message {
 ///     Round1(Msg1),

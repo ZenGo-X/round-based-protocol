@@ -1,4 +1,5 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![deny(missing_docs)]
 
 //! An MPC framework that unifies and simplifies the way of developing and working with
 //! multiparty protocols (e.g. threshold signing, random beacons, etc.).
@@ -25,23 +26,15 @@
 //!   Infrastructure.
 //! * P2P messages should be encrypted \
 //!   Only recipient should be able to learn the content of p2p message
-//! * Should have reliable broadcast channel \
-//!   Simply saying, when party receives a broadcast message over reliable channel it should be ensured that
-//!   everybody else received the same message. Protocol indicates whether outgoing message should be sent
-//!   over reliable channel, see [`.is_reliable_broadcast()`](Outgoing::is_reliable_broadcast).
-//!
-//! ## Available MPC protocols
-//!
-//! Following MPC protocols are built upon `round-based` framework:
-//!
-//! * Threshold ECDSA \
-//!   `round-based-ing` implements t-ECDSA based on GG18 paper
-//!
+//! * Broadcast channel should be reliable \
+//!   Some protocols may require broadcast channel to be reliable. Simply saying, when party receives a
+//!   broadcast message over reliable channel it should be ensured that everybody else received the same
+//!   message.
 
 pub mod blocking;
 mod delivery;
 pub mod party;
-pub mod rounds;
+pub mod rounds_router;
 
 #[cfg(feature = "dev")]
 #[cfg_attr(docsrs, doc(cfg(feature = "dev")))]
@@ -51,7 +44,7 @@ pub use self::delivery::*;
 #[doc(no_inline)]
 pub use self::{
     party::{Mpc, MpcParty},
-    rounds::{ProtocolMessage, RoundMessage},
+    rounds_router::{ProtocolMessage, RoundMessage},
 };
 
 #[doc(hidden)]

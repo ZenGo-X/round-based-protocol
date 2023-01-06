@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{digest::Output, Digest, Sha256};
 use thiserror::Error;
 
-use round_based::rounds::{
+use round_based::rounds_router::{
     simple_store::{RoundInput, RoundInputError},
-    CompleteRoundError, Rounds,
+    CompleteRoundError, RoundsRouter,
 };
 use round_based::{Delivery, Mpc, MpcParty, MsgId, Outgoing, PartyIndex, ProtocolMessage};
 
@@ -40,8 +40,8 @@ where
     let (incoming, mut outgoing) = delivery.split();
 
     // Define rounds
-    let mut rounds = Rounds::<Msg>::builder();
-    let round1 = rounds.add_round(RoundInput::<CommitMsg>::reliable_broadcast(i, n));
+    let mut rounds = RoundsRouter::<Msg>::builder();
+    let round1 = rounds.add_round(RoundInput::<CommitMsg>::broadcast(i, n));
     let round2 = rounds.add_round(RoundInput::<DecommitMsg>::broadcast(i, n));
     let mut rounds = rounds.listen(incoming);
 
@@ -54,7 +54,7 @@ where
     // 2. Commit local randomness (broadcast m=sha256(randomness))
     let commitment = Sha256::digest(&local_randomness);
     outgoing
-        .send(Outgoing::reliable_broadcast(Msg::CommitMsg(CommitMsg {
+        .send(Outgoing::broadcast(Msg::CommitMsg(CommitMsg {
             commitment,
         })))
         .await

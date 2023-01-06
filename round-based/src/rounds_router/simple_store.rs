@@ -17,20 +17,20 @@ use super::MessagesStore;
 ///
 /// ## Example
 /// ```rust
-/// # use round_based::rounds::{MessagesStore, simple_store::RoundInput};
+/// # use round_based::rounds_router::{MessagesStore, simple_store::RoundInput};
 /// # use round_based::{Incoming, MessageType};
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let mut input = RoundInput::<&'static str>::broadcast(1, 3);
 /// input.add_message(Incoming{
 ///     id: 0,
 ///     sender: 0,
-///     msg_type: MessageType::Broadcast{ reliable: false },
+///     msg_type: MessageType::Broadcast,
 ///     msg: "first party message",
 /// })?;
 /// input.add_message(Incoming{
 ///     id: 1,
 ///     sender: 2,
-///     msg_type: MessageType::Broadcast{ reliable: false },
+///     msg_type: MessageType::Broadcast,
 ///     msg: "third party message",
 /// })?;
 /// assert!(!input.wants_more());
@@ -86,16 +86,9 @@ impl<M> RoundInput<M> {
 
     /// Construct a new store for broadcast messages
     ///
-    /// The same as `RoundInput::new(i, n, MessageType::Broadcast{ reliable: false })`
+    /// The same as `RoundInput::new(i, n, MessageType::Broadcast)`
     pub fn broadcast(i: PartyIndex, n: u16) -> Self {
-        Self::new(i, n, MessageType::Broadcast { reliable: false })
-    }
-
-    /// Construct a new store for broadcast messages that must be sent over reliable channel
-    ///
-    /// The same as `RoundInput::new(i, n, MessageType::Broadcast{ reliable: true })`
-    pub fn reliable_broadcast(i: PartyIndex, n: u16) -> Self {
-        Self::new(i, n, MessageType::Broadcast { reliable: true })
+        Self::new(i, n, MessageType::Broadcast)
     }
 
     /// Construct a new store for p2p messages
@@ -106,14 +99,7 @@ impl<M> RoundInput<M> {
     }
 
     fn is_expected_type_of_msg(&self, msg_type: MessageType) -> bool {
-        match self.expected_msg_type {
-            MessageType::Broadcast {
-                reliable: should_be_reliable,
-            } => {
-                matches!(msg_type, MessageType::Broadcast { reliable: actually_reliable } if !should_be_reliable || actually_reliable)
-            }
-            MessageType::P2P => self.expected_msg_type == msg_type,
-        }
+        self.expected_msg_type == msg_type
     }
 }
 
@@ -237,7 +223,9 @@ pub enum RoundInputError {
     /// `msgs_ids` are ids of conflicting messages
     #[error("party {sender} tried to overwrite message")]
     AttemptToOverwriteReceivedMsg {
+        /// IDs of conflicting messages
         msgs_ids: [MsgId; 2],
+        /// Index of party who sent two messages in one round
         sender: PartyIndex,
     },
     /// Unknown sender
@@ -246,8 +234,11 @@ pub enum RoundInputError {
     /// parties involved in the protocol (provided in [`RoundInput::new`])
     #[error("sender index is out of range: sender={sender}, n={n}")]
     SenderIndexOutOfRange {
+        /// Message ID
         msg_id: MsgId,
+        /// Sender index
         sender: PartyIndex,
+        /// Number of parties
         n: u16,
     },
     /// Received message type doesn't match expectations
@@ -256,8 +247,11 @@ pub enum RoundInputError {
     /// but party sent p2p message instead (which is rough protocol violation).
     #[error("expected message {expected:?}, got {actual:?}")]
     MismatchedMessageType {
+        /// Message ID
         msg_id: MsgId,
+        /// Expected type of message
         expected: MessageType,
+        /// Actual type of message
         actual: MessageType,
     },
 }
@@ -266,7 +260,7 @@ pub enum RoundInputError {
 mod tests {
     use matches::assert_matches;
 
-    use crate::rounds::store::MessagesStore;
+    use crate::rounds_router::store::MessagesStore;
     use crate::{Incoming, MessageType};
 
     use super::{RoundInput, RoundInputError};
@@ -387,7 +381,7 @@ mod tests {
             .add_message(Incoming {
                 id: 0,
                 sender: 0,
-                msg_type: MessageType::Broadcast { reliable: false },
+                msg_type: MessageType::Broadcast,
                 msg: Msg(1),
             })
             .unwrap_err();
@@ -396,7 +390,7 @@ mod tests {
             RoundInputError::MismatchedMessageType {
                 msg_id: 0,
                 expected: MessageType::P2P,
-                actual: MessageType::Broadcast { reliable: false }
+                actual: MessageType::Broadcast
             }
         );
 
@@ -413,45 +407,43 @@ mod tests {
             err,
             RoundInputError::MismatchedMessageType {
                 msg_id: 0,
-                expected: MessageType::Broadcast { reliable: false },
+                expected: MessageType::Broadcast,
                 actual: MessageType::P2P,
             }
         );
-        for (sender, reliable) in (0u16..).zip([false, true]) {
+        for sender in 0u16..5 {
             store
                 .add_message(Incoming {
                     id: 0,
                     sender,
-                    msg_type: MessageType::Broadcast { reliable },
+                    msg_type: MessageType::Broadcast,
                     msg: Msg(1),
                 })
                 .unwrap();
         }
 
-        let mut store = RoundInput::<Msg>::reliable_broadcast(3, 5);
-        for msg_type in [MessageType::Broadcast { reliable: false }, MessageType::P2P] {
-            let err = store
-                .add_message(Incoming {
-                    id: 0,
-                    sender: 0,
-                    msg_type,
-                    msg: Msg(1),
-                })
-                .unwrap_err();
-            assert_matches!(
-                err,
-                RoundInputError::MismatchedMessageType {
-                    msg_id: 0,
-                    expected: MessageType::Broadcast { reliable: true },
-                    actual,
-                } if actual == msg_type
-            );
-        }
+        let mut store = RoundInput::<Msg>::broadcast(3, 5);
+        let err = store
+            .add_message(Incoming {
+                id: 0,
+                sender: 0,
+                msg_type: MessageType::P2P,
+                msg: Msg(1),
+            })
+            .unwrap_err();
+        assert_matches!(
+            err,
+            RoundInputError::MismatchedMessageType {
+                msg_id: 0,
+                expected: MessageType::Broadcast,
+                actual,
+            } if actual == MessageType::P2P
+        );
         store
             .add_message(Incoming {
                 id: 0,
                 sender: 0,
-                msg_type: MessageType::Broadcast { reliable: true },
+                msg_type: MessageType::Broadcast,
                 msg: Msg(1),
             })
             .unwrap();

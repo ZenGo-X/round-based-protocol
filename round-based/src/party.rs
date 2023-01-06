@@ -71,17 +71,23 @@ use crate::delivery::Delivery;
 /// }
 /// ```
 pub trait Mpc: internal::Sealed {
+    /// MPC message
     type ProtocolMessage;
+    /// Transport layer implementation
     type Delivery: Delivery<
         Self::ProtocolMessage,
         SendError = Self::SendError,
         ReceiveError = Self::ReceiveError,
     >;
+    /// Specifies how computationally heavy tasks should be handled
     type SpawnBlocking: SpawnBlocking;
 
+    /// Sending message error
     type SendError: Error + Send + Sync + 'static;
+    /// Receiving message error
     type ReceiveError: Error + Send + Sync + 'static;
 
+    /// Converts into [`MpcParty`]
     fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::SpawnBlocking>;
 }
 
@@ -92,7 +98,9 @@ mod internal {
 /// Party of MPC protocol
 #[non_exhaustive]
 pub struct MpcParty<M, D, B = TokioSpawnBlocking> {
+    /// Defines transport layer
     pub delivery: D,
+    /// Defines how computationally heavy tasks should be handled
     pub blocking: Blocking<B>,
     _msg: PhantomType<M>,
 }
@@ -119,11 +127,11 @@ where
     M: Send + 'static,
     D: Delivery<M>,
 {
-    /// Overrides the way how protocol will spawn blocking tasks
+    /// Specifies how computationally heavy tasks are handled
     ///
     /// By default, [tokio::task::spawn_blocking] is used. You can, for instance, override it to use
     /// a thread pool.
-    pub fn override_spawn_blocking<B>(self, spawn_blocking: B) -> MpcParty<M, D, B>
+    pub fn set_spawn_blocking<B>(self, spawn_blocking: B) -> MpcParty<M, D, B>
     where
         B: SpawnBlocking,
     {

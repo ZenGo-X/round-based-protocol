@@ -157,7 +157,7 @@ fn convert_output_message_to_outgoing<M>(
                 .ok_or(UnknownDestination { recipient: index })?;
             MessageDestination::OneParty(index)
         }
-        Address::Broadcast => MessageDestination::AllParties { reliable: true },
+        Address::Broadcast => MessageDestination::AllParties,
     };
 
     Ok(Outgoing {
