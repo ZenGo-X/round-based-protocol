@@ -19,6 +19,23 @@ pub trait Delivery<M> {
     fn split(self) -> (Self::Receive, Self::Send);
 }
 
+impl<M, I, O, IErr, OErr> Delivery<M> for (I, O)
+where
+    I: Stream<Item = Result<Incoming<M>, IErr>> + Unpin,
+    O: Sink<Outgoing<M>, Error = OErr> + Unpin,
+    IErr: Error + Send + Sync + 'static,
+    OErr: Error + Send + Sync + 'static,
+{
+    type Send = O;
+    type Receive = I;
+    type SendError = OErr;
+    type ReceiveError = IErr;
+
+    fn split(self) -> (Self::Receive, Self::Send) {
+        (self.0, self.1)
+    }
+}
+
 /// Incoming message
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct Incoming<M> {
