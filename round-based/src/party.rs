@@ -80,12 +80,14 @@ pub trait Mpc: internal::Sealed {
         ReceiveError = Self::ReceiveError,
     >;
     /// Specifies how computationally heavy tasks should be handled
-    type SpawnBlocking: SpawnBlocking;
+    type SpawnBlocking: SpawnBlocking<Error = Self::SpawnError>;
 
     /// Sending message error
     type SendError: Error + Send + Sync + 'static;
     /// Receiving message error
     type ReceiveError: Error + Send + Sync + 'static;
+    /// [SpawnBlocking](Self::SpawnBlocking) error
+    type SpawnError: Error + Send + Sync + 'static;
 
     /// Converts into [`MpcParty`]
     fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::SpawnBlocking>;
@@ -151,6 +153,7 @@ where
     D::SendError: Error + Send + Sync + 'static,
     D::ReceiveError: Error + Send + Sync + 'static,
     B: SpawnBlocking,
+    B::Error: Error + Send + Sync + 'static,
 {
     type ProtocolMessage = M;
     type Delivery = D;
@@ -158,6 +161,7 @@ where
 
     type SendError = D::SendError;
     type ReceiveError = D::ReceiveError;
+    type SpawnError = B::Error;
 
     fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::SpawnBlocking> {
         self
