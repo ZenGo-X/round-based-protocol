@@ -1224,6 +1224,7 @@ name = "round-based"
 version = "0.2.0"
 dependencies = [
  "futures",
+ "futures-util",
  "matches",
  "never",
  "phantom-type",
@@ -1237,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "round-based-derive"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2 1.0.36",
  "quote 1.0.15",

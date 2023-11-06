@@ -59,6 +59,7 @@ impl SpawnBlocking for ExecuteInPlace {
 pub use tokio_backend::SpawnOnTokio;
 
 #[cfg(feature = "runtime-tokio")]
+#[cfg_attr(docsrs, doc(cfg(feature = "dev")))]
 mod tokio_backend {
     use tokio::task::{JoinError, JoinHandle};
 

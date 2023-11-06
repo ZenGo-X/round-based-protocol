@@ -43,9 +43,10 @@
 use std::pin::Pin;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::task::ready;
 use std::task::{Context, Poll};
 
-use futures::{ready, Sink, Stream};
+use futures_util::{Sink, Stream};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 

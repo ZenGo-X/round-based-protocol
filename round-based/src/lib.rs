@@ -27,14 +27,22 @@
 //!   Some protocols may require broadcast channel to be reliable. Simply saying, when party receives a
 //!   broadcast message over reliable channel it should be ensured that everybody else received the same
 //!   message.
+//!
+//! ## Features
+//!
+//! * `dev` enables development tools such as [protocol simulation](simulation)
+//! * `runtime-tokio` tells that [computationally-heavy tasks](blocking) shall be executed using [tokio] runtime
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
 #![forbid(unused_crate_dependencies)]
 
-// Fixes false-positive of `unused_crate_dependencies` lint
+/// Fixes false-positive of `unused_crate_dependencies` lint that only occure in the tests
 #[cfg(test)]
-use trybuild as _;
+mod false_positives {
+    use futures as _;
+    use trybuild as _;
+}
 
 pub mod blocking;
 mod delivery;

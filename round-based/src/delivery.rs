@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use futures::{Sink, Stream};
+use futures_util::{Sink, Stream};
 
 /// Networking abstraction
 ///

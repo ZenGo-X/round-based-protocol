@@ -52,7 +52,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::mem;
 
-use futures::{Stream, StreamExt};
+use futures_util::{Stream, StreamExt};
 use never::Never;
 use phantom_type::PhantomType;
 use thiserror::Error;

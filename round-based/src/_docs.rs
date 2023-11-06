@@ -7,14 +7,14 @@ use crate::{Delivery, Incoming, Outgoing};
 pub fn fake_delivery<M>() -> impl Delivery<M> {
     struct FakeDelivery<M>(PhantomType<M>);
     impl<M> Delivery<M> for FakeDelivery<M> {
-        type Send = futures::sink::Drain<Outgoing<M>>;
-        type Receive = futures::stream::Pending<Result<Incoming<M>, Infallible>>;
+        type Send = futures_util::sink::Drain<Outgoing<M>>;
+        type Receive = futures_util::stream::Pending<Result<Incoming<M>, Infallible>>;
 
         type SendError = Infallible;
         type ReceiveError = Infallible;
 
         fn split(self) -> (Self::Receive, Self::Send) {
-            (futures::stream::pending(), futures::sink::drain())
+            (futures_util::stream::pending(), futures_util::sink::drain())
         }
     }
     FakeDelivery(PhantomType::new())

@@ -15,7 +15,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-futures = "0.3"
+futures-util = { version = "0.3", default-features = false }
 phantom-type = "0.3"
 tracing = "0.1"
 thiserror = "1"
@@ -29,6 +29,7 @@ tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 [dev-dependencies]
 trybuild = "1"
 matches = "0.1"
+futures = { version = "0.3", default-features = false }
 
 [features]
 default = []
