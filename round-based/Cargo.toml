@@ -19,7 +19,6 @@ futures-util = { version = "0.3", default-features = false }
 phantom-type = "0.3"
 tracing = "0.1"
 thiserror = "1"
-never = "0.1"
 
 round-based-derive = { path = "../round-based-derive", optional = true }
 

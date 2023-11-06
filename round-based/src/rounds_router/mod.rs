@@ -49,11 +49,11 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::fmt::Debug;
 use std::mem;
 
 use futures_util::{Stream, StreamExt};
-use never::Never;
 use phantom_type::PhantomType;
 use thiserror::Error;
 use tracing::{debug, error, trace, trace_span, warn, Span};
@@ -219,11 +219,11 @@ where
                     errors::Bug::MismatchedOutputType,
                 )))?),
             Ok(Err(any)) => Err(any
-                .downcast::<CompleteRoundError<R::Error, Never>>()
+                .downcast::<CompleteRoundError<R::Error, Infallible>>()
                 .or(Err(CompleteRoundError::from(
                     errors::Bug::MismatchedErrorType,
                 )))?
-                .map_io_err(|e| e.into_any())),
+                .map_io_err(|e| match e {})),
             Err(err) => Err(errors::Bug::TakeRoundResult(err).into()),
         }
     }
@@ -331,7 +331,7 @@ enum TakeOutputError {
 
 enum ProcessRoundMessageImpl<S: MessagesStore, M: ProtocolMessage + RoundMessage<S::Msg>> {
     InProgress { store: S, _ph: PhantomType<fn(M)> },
-    Completed(Result<S::Output, CompleteRoundError<S::Error, Never>>),
+    Completed(Result<S::Output, CompleteRoundError<S::Error, Infallible>>),
     Gone,
 }
 
@@ -343,7 +343,7 @@ where
     fn _process_message(
         store: &mut S,
         msg: Incoming<M>,
-    ) -> Result<(), CompleteRoundError<S::Error, Never>> {
+    ) -> Result<(), CompleteRoundError<S::Error, Infallible>> {
         let msg = msg.try_map(M::from_protocol_message).map_err(|msg| {
             errors::Bug::MessageFromAnotherRound {
                 actual_number: msg.round(),
