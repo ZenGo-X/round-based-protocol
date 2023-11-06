@@ -1,3 +1,7 @@
+//! [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+//! [![Docs](https://docs.rs/round-based/badge.svg)](https://docs.rs/round-based)
+//! [![Crates io](https://img.shields.io/crates/v/round-based.svg)](https://crates.io/crates/round-based)
+//!
 //! An MPC framework that unifies and simplifies the way of developing and working with
 //! multiparty protocols (e.g. threshold signing, random beacons, etc.).
 //!
