@@ -34,7 +34,7 @@ use std::error::Error;
 
 use phantom_type::PhantomType;
 
-use crate::blocking::{Blocking, SpawnBlocking, TokioSpawnBlocking};
+use crate::blocking::{self, SpawnBlocking};
 use crate::delivery::Delivery;
 
 /// Party of MPC protocol (trait)
@@ -99,11 +99,11 @@ mod internal {
 
 /// Party of MPC protocol
 #[non_exhaustive]
-pub struct MpcParty<M, D, B = TokioSpawnBlocking> {
+pub struct MpcParty<M, D, B = blocking::DefaultSpawner> {
     /// Defines transport layer
     pub delivery: D,
     /// Defines how computationally heavy tasks should be handled
-    pub blocking: Blocking<B>,
+    pub blocking: B,
     _msg: PhantomType<M>,
 }
 
@@ -118,7 +118,7 @@ where
     pub fn connected(delivery: D) -> Self {
         Self {
             delivery,
-            blocking: Blocking::new(TokioSpawnBlocking),
+            blocking: Default::default(),
             _msg: PhantomType::new(),
         }
     }
@@ -139,7 +139,7 @@ where
     {
         MpcParty {
             delivery: self.delivery,
-            blocking: Blocking::new(spawn_blocking),
+            blocking: spawn_blocking,
             _msg: self._msg,
         }
     }

@@ -1,6 +1,3 @@
-#![cfg_attr(docsrs, feature(doc_cfg))]
-#![deny(missing_docs)]
-
 //! An MPC framework that unifies and simplifies the way of developing and working with
 //! multiparty protocols (e.g. threshold signing, random beacons, etc.).
 //!
@@ -30,6 +27,14 @@
 //!   Some protocols may require broadcast channel to be reliable. Simply saying, when party receives a
 //!   broadcast message over reliable channel it should be ensured that everybody else received the same
 //!   message.
+
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![deny(missing_docs)]
+#![forbid(unused_crate_dependencies)]
+
+// Fixes false-positive of `unused_crate_dependencies` lint
+#[cfg(test)]
+use trybuild as _;
 
 pub mod blocking;
 mod delivery;

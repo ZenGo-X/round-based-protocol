@@ -2,7 +2,7 @@
 name = "round-based"
 version = "0.2.0"
 edition = "2021"
-license = "GPL-3.0"
+license = "MIT OR Apache-2.0"
 description = "Driver for MPC protocols"
 repository = "https://github.com/ZenGo-X/round-based-protocol"
 categories = ["asynchronous", "cryptography", "network-programming"]
@@ -17,33 +17,24 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 futures = "0.3"
 phantom-type = "0.3"
-tokio = { version = "1", features = ["rt"] }
 tracing = "0.1"
-serde = { version = "1", features = ["derive"] }
-bincode = "1"
-async-stream = "0.3"
-tokio-stream = { version = "0.1", features = ["sync"] }
 thiserror = "1"
 never = "0.1"
 
 round-based-derive = { path = "../round-based-derive", optional = true }
 
+tokio = { version = "1", features = ["rt"], optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+
 [dev-dependencies]
-rand = "0.8"
-rand_chacha = "0.3"
-sha2 = "0.9"
-hex = "*"
 trybuild = "1"
-rcgen = "0.8"
-test-case = { version = "1", features = ["hamcrest_assertions"] }
-hamcrest2 = "0.3"
-proptest = "1"
 matches = "0.1"
 
 [features]
 default = []
-dev = ["tokio/sync"]
+dev = ["tokio/sync", "tokio-stream"]
 derive = ["round-based-derive"]
+runtime-tokio = ["tokio"]
 
 [[test]]
 name = "derive"
