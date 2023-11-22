@@ -34,8 +34,8 @@ use std::error::Error;
 
 use phantom_type::PhantomType;
 
-use crate::blocking::{self, SpawnBlocking};
 use crate::delivery::Delivery;
+use crate::runtime::{self, AsyncRuntime};
 
 /// Party of MPC protocol (trait)
 ///
@@ -59,13 +59,13 @@ use crate::delivery::Delivery;
 ///
 /// If we didn't have this trait, generics would be less readable:
 /// ```rust
-/// use round_based::{MpcParty, Delivery, blocking::SpawnBlocking, PartyIndex};
+/// use round_based::{MpcParty, Delivery, runtime::AsyncRuntime, PartyIndex};
 ///
 /// # struct Msg;
-/// async fn keygen<D, B>(party: MpcParty<Msg, D, B>, i: PartyIndex, n: u16)
+/// async fn keygen<D, R>(party: MpcParty<Msg, D, R>, i: PartyIndex, n: u16)
 /// where
 ///     D: Delivery<Msg>,
-///     B: SpawnBlocking
+///     R: AsyncRuntime
 /// {
 ///     // ...
 /// }
@@ -79,18 +79,16 @@ pub trait Mpc: internal::Sealed {
         SendError = Self::SendError,
         ReceiveError = Self::ReceiveError,
     >;
-    /// Specifies how computationally heavy tasks should be handled
-    type SpawnBlocking: SpawnBlocking<Error = Self::SpawnError>;
+    /// Async runtime
+    type Runtime: AsyncRuntime;
 
     /// Sending message error
     type SendError: Error + Send + Sync + 'static;
     /// Receiving message error
     type ReceiveError: Error + Send + Sync + 'static;
-    /// [SpawnBlocking](Self::SpawnBlocking) error
-    type SpawnError: Error + Send + Sync + 'static;
 
     /// Converts into [`MpcParty`]
-    fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::SpawnBlocking>;
+    fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::Runtime>;
 }
 
 mod internal {
@@ -99,11 +97,11 @@ mod internal {
 
 /// Party of MPC protocol
 #[non_exhaustive]
-pub struct MpcParty<M, D, B = blocking::DefaultSpawner> {
+pub struct MpcParty<M, D, R = runtime::DefaultRuntime> {
     /// Defines transport layer
     pub delivery: D,
     /// Defines how computationally heavy tasks should be handled
-    pub blocking: B,
+    pub runtime: R,
     _msg: PhantomType<M>,
 }
 
@@ -118,7 +116,7 @@ where
     pub fn connected(delivery: D) -> Self {
         Self {
             delivery,
-            blocking: Default::default(),
+            runtime: Default::default(),
             _msg: PhantomType::new(),
         }
     }
@@ -129,17 +127,14 @@ where
     M: Send + 'static,
     D: Delivery<M>,
 {
-    /// Specifies how computationally heavy tasks are handled
-    ///
-    /// By default, [tokio::task::spawn_blocking] is used. You can, for instance, override it to use
-    /// a thread pool.
-    pub fn set_spawn_blocking<B>(self, spawn_blocking: B) -> MpcParty<M, D, B>
+    /// Specifies a [async runtime](runtime)
+    pub fn set_runtime<R>(self, runtime: R) -> MpcParty<M, D, R>
     where
-        B: SpawnBlocking,
+        R: AsyncRuntime,
     {
         MpcParty {
             delivery: self.delivery,
-            blocking: spawn_blocking,
+            runtime,
             _msg: self._msg,
         }
     }
@@ -147,23 +142,21 @@ where
 
 impl<M, D, B> internal::Sealed for MpcParty<M, D, B> {}
 
-impl<M, D, B> Mpc for MpcParty<M, D, B>
+impl<M, D, R> Mpc for MpcParty<M, D, R>
 where
     D: Delivery<M>,
     D::SendError: Error + Send + Sync + 'static,
     D::ReceiveError: Error + Send + Sync + 'static,
-    B: SpawnBlocking,
-    B::Error: Error + Send + Sync + 'static,
+    R: AsyncRuntime,
 {
     type ProtocolMessage = M;
     type Delivery = D;
-    type SpawnBlocking = B;
+    type Runtime = R;
 
     type SendError = D::SendError;
     type ReceiveError = D::ReceiveError;
-    type SpawnError = B::Error;
 
-    fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::SpawnBlocking> {
+    fn into_party(self) -> MpcParty<Self::ProtocolMessage, Self::Delivery, Self::Runtime> {
         self
     }
 }

@@ -12,7 +12,7 @@
 //! * Simple, configurable \
 //!   Protocol can be carried out in a few lines of code: check out examples.
 //! * Independent of networking layer \
-//!   We use abstractions [`Stream`](futures::Stream) and [`Sink`](futures::Sink) to receive and send messages.
+//!   We use abstractions [`Stream`](futures_util::Stream) and [`Sink`](futures_util::Sink) to receive and send messages.
 //!
 //! ## Networking
 //!
@@ -35,7 +35,7 @@
 //! ## Features
 //!
 //! * `dev` enables development tools such as [protocol simulation](simulation)
-//! * `runtime-tokio` tells that [computationally-heavy tasks](blocking) shall be executed using [tokio] runtime
+//! * `runtime-tokio` enables [tokio]-specific implementation of [async runtime](runtime)
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
@@ -48,10 +48,10 @@ mod false_positives {
     use trybuild as _;
 }
 
-pub mod blocking;
 mod delivery;
 pub mod party;
 pub mod rounds_router;
+pub mod runtime;
 
 #[cfg(feature = "dev")]
 #[cfg_attr(docsrs, doc(cfg(feature = "dev")))]
