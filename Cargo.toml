@@ -4,6 +4,5 @@ members = [
     "round-based",
     "round-based-tests",
     "round-based-derive",
-    "round-based-ing",
     "examples/random-generation-protocol",
 ]
