@@ -7,6 +7,7 @@ description = "Driver for MPC protocols"
 repository = "https://github.com/ZenGo-X/round-based-protocol"
 categories = ["asynchronous", "cryptography", "network-programming"]
 keywords = ["round-based", "mpc", "protocol"]
+readme = "../README.md"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -20,7 +21,7 @@ phantom-type = "0.3"
 tracing = "0.1"
 thiserror = "1"
 
-round-based-derive = { path = "../round-based-derive", optional = true }
+round-based-derive = { version = "0.2", optional = true }
 
 tokio = { version = "1", features = ["rt"], optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }

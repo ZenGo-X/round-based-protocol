@@ -1,0 +1,38 @@
+on:
+  push:
+    tags:        
+      - 'v*'
+      - 'derive-v*'
+  workflow_dispatch:
+
+name: Publish
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+  publish-round-based:
+    name: Publish round-based
+    environment: crates.io
+    runs-on: ubuntu-latest
+    if: >-
+      github.ref_type == 'tag' 
+      && startsWith(github.ref_name, 'v')
+    steps:
+    - uses: actions/checkout@v3
+    - run: cargo publish -p round-based --token ${CRATES_TOKEN}
+      env:
+        CRATES_TOKEN: ${{ secrets.CRATES_TOKEN }}
+  publish-derive:
+    name: Publish round-based-derive
+    environment: crates.io
+    runs-on: ubuntu-latest
+    if: >-
+      github.ref_type == 'tag' 
+      && startsWith(github.ref_name, 'derive-v')
+    steps:
+    - uses: actions/checkout@v3
+    - run: cargo publish -p round-based-derive --token ${CRATES_TOKEN}
+      env:
+        CRATES_TOKEN: ${{ secrets.CRATES_TOKEN }}

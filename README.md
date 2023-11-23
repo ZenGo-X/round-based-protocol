@@ -1,4 +1,4 @@
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+![License: MIT](https://img.shields.io/crates/l/round-based.svg)
 [![Docs](https://docs.rs/round-based/badge.svg)](https://docs.rs/round-based)
 [![Crates io](https://img.shields.io/crates/v/round-based.svg)](https://crates.io/crates/round-based)
 
