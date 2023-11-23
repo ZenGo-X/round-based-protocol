@@ -1,0 +1,50 @@
+name: Rust
+
+on:
+  pull_request:
+    branches: [ "*" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: Swatinem/rust-cache@v2
+      with:
+        cache-on-failure: "true"
+    - name: Build no features
+      run: cargo build -p round-based
+    - name: Build with tokio
+      run: cargo build -p round-based --features runtime-tokio
+    - name: Build with all features
+      run: cargo build -p round-based --all-features
+    - name: Run tests
+      run: cargo test --all-features
+  check-fmt:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+  check-docs:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: Swatinem/rust-cache@v2
+      with:
+        cache-on-failure: "true"
+    - name: Check docs
+      run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: Swatinem/rust-cache@v2
+      with:
+        cache-on-failure: "true"
+    - name: Run clippy
+      run: cargo clippy --all --lib

@@ -1,0 +1,15 @@
+[package]
+name = "round-based-derive"
+version = "0.2.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Proc-macro for deriving `round-based` traits"
+repository = "https://github.com/ZenGo-X/round-based-protocol"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "1"
+quote = "1"
+proc-macro2 = "1"
