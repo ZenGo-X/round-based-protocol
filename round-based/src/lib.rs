@@ -37,7 +37,7 @@
 //! * `dev` enables development tools such as [protocol simulation](simulation)
 //! * `runtime-tokio` enables [tokio]-specific implementation of [async runtime](runtime)
 
-#![cfg_attr(docsrs, feature(doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg, doc_cfg_hide))]
 #![deny(missing_docs)]
 #![forbid(unused_crate_dependencies)]
 
@@ -54,7 +54,6 @@ pub mod rounds_router;
 pub mod runtime;
 
 #[cfg(feature = "dev")]
-#[cfg_attr(docsrs, doc(cfg(feature = "dev")))]
 pub mod simulation;
 
 pub use self::delivery::*;
@@ -71,5 +70,4 @@ pub mod _docs;
 ///
 /// See [`ProtocolMessage`] docs for more details
 #[cfg(feature = "derive")]
-#[cfg_attr(docsrs, doc(cfg(feature = "derive")))]
 pub use round_based_derive::ProtocolMessage;

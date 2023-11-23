@@ -21,7 +21,6 @@ pub trait AsyncRuntime {
 
 /// [Tokio](tokio)-specific async runtime
 #[cfg(feature = "runtime-tokio")]
-#[cfg_attr(docsrs, doc(cfg(feature = "runtime-tokio")))]
 #[derive(Debug, Default)]
 pub struct TokioRuntime;
 
@@ -39,9 +38,11 @@ pub use unknown_runtime::UnknownRuntime;
 
 /// Default runtime
 #[cfg(feature = "runtime-tokio")]
+#[cfg_attr(docsrs, doc(cfg(all())))]
 pub type DefaultRuntime = TokioRuntime;
 /// Default runtime
 #[cfg(not(feature = "runtime-tokio"))]
+#[cfg_attr(docsrs, doc(cfg(all())))]
 pub type DefaultRuntime = UnknownRuntime;
 
 /// Unknown async runtime
