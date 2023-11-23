@@ -35,4 +35,4 @@ the documentation of the protocol you're using), but usually they are:
 ## Features
 
 * `dev` enables development tools such as protocol simulation
-* `runtime-tokio` tells that computationally-heavy tasks shall be executed using tokio runtime
+* `runtime-tokio` enables tokio-specific implementation of async runtime
