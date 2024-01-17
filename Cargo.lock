@@ -560,6 +560,7 @@ dependencies = [
  "matches",
  "phantom-type",
  "round-based-derive 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde",
  "thiserror",
  "tokio",
  "tokio-stream",

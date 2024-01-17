@@ -38,6 +38,7 @@ where
 
 /// Incoming message
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Incoming<M> {
     /// Index of a message
     pub id: MsgId,
@@ -52,6 +53,7 @@ pub struct Incoming<M> {
 
 /// Message type (broadcast or p2p)
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MessageType {
     /// Message was broadcasted
     Broadcast,
@@ -119,6 +121,7 @@ impl<M> Incoming<M> {
 
 /// Outgoing message
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Outgoing<M> {
     /// Message destination: either one party (p2p message) or all parties (broadcast message)
     pub recipient: MessageDestination,
@@ -175,6 +178,7 @@ impl<M> Outgoing<M> {
 
 /// Destination of an outgoing message
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MessageDestination {
     /// Broadcast message
     AllParties,
